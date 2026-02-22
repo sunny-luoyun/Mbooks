@@ -18,8 +18,8 @@ interface ReaderParams {
 
 export interface Chapter {
   title: string;
-  startPage: number; // 在performPagination前是字符索引，之后是全局页码索引
-  endPage: number;   // 同上
+  startPage: number;
+  endPage: number;
   level: number;
   pageCount: number;
 }
@@ -92,6 +92,9 @@ struct ReaderPage {
 
   // 使用 @State 让 ReaderContent 能监听变化
   @State pages: PageData[] = [];
+
+  // 监听系统颜色模式变化
+  @StorageProp('currentColorMode') currentColorMode: number = 0;
 
   private prefManager: preferences.Preferences | null = null;
   private saveTimer: number | null = null;
@@ -229,8 +232,7 @@ struct ReaderPage {
     const contentWidth = Math.max(100, this.screenWidth - Theme.PAGE_PADDING * 2);
 
     // 修复：调整字符宽度系数，中文18sp字体实际宽度约为18px
-    // 原来使用 0.9 导致每行字符数过少，改为 1.0 或根据实际屏幕微调
-    const charWidth = Theme.FONT_BODY * 0.5; // 改为 1.0，让每行填充更多字符
+    const charWidth = Theme.FONT_BODY * 0.5;
 
     // 考虑不同设备的屏幕密度，设置一个最小字符数保证可读性
     const minCharsPerLine = 20;
@@ -252,11 +254,11 @@ struct ReaderPage {
 
     for (let chapterIdx = 0; chapterIdx < this.chapters.length; chapterIdx++) {
       const chapter = this.chapters[chapterIdx];
-      const startIdx = chapter.startPage; // 此时还是字符索引
+      const startIdx = chapter.startPage;
       const endIdx = chapter.endPage;
       const chapterContent = this.content.substring(startIdx, endIdx);
 
-      // 文本断行 - 修复后的逻辑
+      // 文本断行
       const lines = this.breakTextIntoLines(chapterContent, charsPerLine);
 
       // 记录章节起始页码（全局页码索引）
@@ -275,7 +277,7 @@ struct ReaderPage {
             chapterIndex: chapterIdx,
             pageIndexInChapter: chapter.pageCount,
             globalPageIndex: globalPageIndex,
-            lines: pageLines.slice() // 复制数组
+            lines: pageLines.slice()
           });
 
           pageLines = [];
@@ -321,7 +323,7 @@ struct ReaderPage {
 
     for (const paragraph of paragraphs) {
       if (paragraph.length === 0) {
-        lines.push(''); // 保留空行
+        lines.push('');
         continue;
       }
 
@@ -337,33 +339,27 @@ struct ReaderPage {
         if (currentWidth + charWidth > maxCharsPerLine && currentLine.length > 0) {
           // 处理行尾：避免标点符号在行首
           if (this.isPunctuation(char) && !this.isStartPunctuation(char)) {
-            // 如果是结束标点，放在当前行末尾
             currentLine += char;
             lines.push(currentLine);
             currentLine = '';
             currentWidth = 0;
             i++;
           } else {
-            // 检查前一个字符是否是标点，避免标点留在行尾
             const lastChar = currentLine[currentLine.length - 1];
             if (this.isPunctuation(lastChar) && !this.isStartPunctuation(lastChar)) {
-              // 前一个字符是结束标点，可以换行
               lines.push(currentLine);
               currentLine = char;
               currentWidth = charWidth;
               i++;
             } else {
-              // 尝试在单词边界断开（针对英文）
               const breakPoint = this.findWordBreak(currentLine);
               if (breakPoint > 0 && breakPoint < currentLine.length - 3) {
-                // 在单词边界断开
                 const remaining = currentLine.substring(breakPoint);
                 currentLine = currentLine.substring(0, breakPoint);
                 lines.push(currentLine);
                 currentLine = remaining + char;
                 currentWidth = this.calculateWidth(currentLine);
               } else {
-                // 直接换行
                 lines.push(currentLine);
                 currentLine = char;
                 currentWidth = charWidth;
@@ -378,7 +374,6 @@ struct ReaderPage {
         }
       }
 
-      // 处理段落剩余内容
       if (currentLine.length > 0) {
         lines.push(currentLine);
       }
@@ -387,7 +382,6 @@ struct ReaderPage {
     return lines;
   }
 
-  // 查找单词断开点（从右向左找空格或标点）
   private findWordBreak(line: string): number {
     for (let i = line.length - 1; i > 0; i--) {
       if (line[i] === ' ' || line[i] === '\t') {
@@ -397,7 +391,6 @@ struct ReaderPage {
     return -1;
   }
 
-  // 计算字符串宽度
   private calculateWidth(str: string): number {
     let width = 0;
     for (const char of str) {
@@ -407,36 +400,28 @@ struct ReaderPage {
   }
 
   getCharWidth(char: string): number {
-    // 中文字符和全角字符占2，英文占1
     const code = char.charCodeAt(0);
-    // CJK Unified Ideographs: 4E00-9FFF
-    // Fullwidth ASCII: FF01-FF5E
-    // Halfwidth Katakana: FF65-FF9F
-    if (code >= 0x4E00 && code <= 0x9FFF) return 2; // CJK
-    if (code >= 0xFF01 && code <= 0xFF5E) return 2; // Fullwidth
-    if (code >= 0x3000 && code <= 0x303F) return 2; // CJK punctuation
-    if (code >= 0x3040 && code <= 0x309F) return 2; // Hiragana
-    if (code >= 0x30A0 && code <= 0x30FF) return 2; // Katakana
-    return 1; // ASCII and others
+    if (code >= 0x4E00 && code <= 0x9FFF) return 2;
+    if (code >= 0xFF01 && code <= 0xFF5E) return 2;
+    if (code >= 0x3000 && code <= 0x303F) return 2;
+    if (code >= 0x3040 && code <= 0x309F) return 2;
+    if (code >= 0x30A0 && code <= 0x30FF) return 2;
+    return 1;
   }
-  // 判断是否为标点符号
+
   isPunctuation(char: string): boolean {
     return '，。！？；：、.,;:!?"\'()[]'.includes(char);
   }
 
-  // 判断是否为行首标点（这些标点不应该出现在行首）
   isStartPunctuation(char: string): boolean {
     return '，。！？；：、.,;:!?）】》'.includes(char);
   }
 
   parseChapters(): void {
-    // 重置章节数组
     this.chapters = [];
-
     const matches = Array.from(this.content.matchAll(CHAPTER_REGEX));
 
     if (matches.length === 0) {
-      // 无章节，整本书作为一章
       this.chapters = [{
         title: "正文",
         startPage: 0,
@@ -484,7 +469,6 @@ struct ReaderPage {
       this.currentPageIndex = pageData.pageIndexInChapter;
     }
 
-    // 发送事件到 ReaderContent
     emitter.emit(READER_EVENTS.JUMP_TO_PAGE, {
       data: {
         globalPage: safePage,
@@ -556,7 +540,6 @@ struct ReaderPage {
     const progress = await this.loadProgress();
     if (!progress) return;
 
-    // 优先使用全局页码
     if (progress.globalPage !== undefined && progress.globalPage >= 0 && progress.globalPage < this.totalPages) {
       this.jumpToGlobalPage(progress.globalPage);
     } else if (progress.chapterIndex >= 0 && progress.chapterIndex < this.chapters.length) {
@@ -597,7 +580,6 @@ struct ReaderPage {
     const globalPage = chapter.startPage + this.currentPageIndex;
     const pageData = this.pages[globalPage];
 
-    // 生成摘录
     let excerpt = '书签';
     if (pageData && pageData.lines.length > 0) {
       excerpt = pageData.lines.slice(0, 2).join('').substring(0, 40) + '...';
@@ -612,7 +594,6 @@ struct ReaderPage {
       timestamp: Date.now()
     };
 
-    // 检查重复
     const exists = this.bookmarks.some(b =>
     b.chapterIndex === bookmark.chapterIndex && b.pageIndex === bookmark.pageIndex
     );
@@ -645,7 +626,7 @@ struct ReaderPage {
       } else if (this.errorMsg) {
         this.ErrorView()
       } else {
-        // 阅读内容层 - 传递 pages 给 ReaderContent
+        // 阅读内容层
         ReaderContent({
           pages: this.pages,
           chapters: this.chapters,
@@ -683,27 +664,42 @@ struct ReaderPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(Theme.BG_COLOR)
+    .backgroundColor(Theme.BG_COLOR) // 使用动态颜色
   }
 
   @Builder LoadingView() {
     Column() {
-      LoadingProgress().width(40).height(40)
-      Text('正在加载书籍...').fontSize(14).margin({ top: 12 })
-      Text('大文件可能需要一些时间').fontSize(12).fontColor('#999').margin({ top: 8 })
+      LoadingProgress()
+        .width(40)
+        .height(40)
+        .color(Theme.TEXT_MAIN) // 加载动画颜色适配
+      Text('正在加载书籍...')
+        .fontSize(14)
+        .fontColor(Theme.TEXT_MAIN) // 使用动态颜色
+        .margin({ top: 12 })
+      Text('大文件可能需要一些时间')
+        .fontSize(12)
+        .fontColor(Theme.TEXT_SECONDARY) // 使用动态颜色
+        .margin({ top: 8 })
     }
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
+    .backgroundColor(Theme.BG_COLOR) // 使用动态颜色
   }
 
   @Builder ErrorView() {
     Column() {
-      Text(this.errorMsg).fontSize(14).fontColor('#FF4D4F')
-      Button('返回').margin({ top: 20 }).onClick(() => router.back())
+      Text(this.errorMsg)
+        .fontSize(14)
+        .fontColor('#FF4D4F')
+      Button('返回')
+        .margin({ top: 20 })
+        .onClick(() => router.back())
     }
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
+    .backgroundColor(Theme.BG_COLOR) // 使用动态颜色
   }
 }

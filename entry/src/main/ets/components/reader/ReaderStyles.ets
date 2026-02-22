@@ -1,47 +1,77 @@
 // entry/src/main/ets/components/reader/ReaderStyles.ets
 
-// 主题配置
+// 颜色模式类型
+export enum ColorMode {
+  LIGHT = 0,
+  DARK = 1
+}
+
+// 动态主题类 - 根据当前颜色模式返回对应颜色
 export class Theme {
-  // 背景色：护眼纸纹色
-  static readonly BG_COLOR: string = '#F4EFE7';
+  // 当前颜色模式，从 AppStorage 获取
+  static getCurrentMode(): ColorMode {
+    const mode = AppStorage.get<number>('currentColorMode');
+    return mode === 0 ? ColorMode.DARK : ColorMode.LIGHT;
+  }
+
+  static isDarkMode(): boolean {
+    return Theme.getCurrentMode() === ColorMode.DARK;
+  }
+
+  // 背景色：护眼纸纹色 / 深色背景
+  static get BG_COLOR(): string {
+    return Theme.isDarkMode() ? '#1A1A1A' : '#F4EFE7';
+  }
+
+  // 为了兼容性保留静态常量（浅色模式默认值）
+  static readonly BG_COLOR_LIGHT: string = '#F4EFE7';
   static readonly BG_COLOR_DARK: string = '#1A1A1A';
 
   // 文字颜色
-  static readonly TEXT_MAIN: string = '#2C2C2C';
-  static readonly TEXT_SECONDARY: string = '#8A8A8A';
-  static readonly TEXT_ACCENT: string = '#C0392B'; // 砖红色
+  static get TEXT_MAIN(): string {
+    return Theme.isDarkMode() ? '#E0E0E0' : '#2C2C2C';
+  }
+
+  static get TEXT_SECONDARY(): string {
+    return Theme.isDarkMode() ? '#888888' : '#8A8A8A';
+  }
+
+  static get TEXT_ACCENT(): string {
+    return Theme.isDarkMode() ? '#E74C3C' : '#C0392B'; // 深色模式用更亮的砖红
+  }
 
   // 组件背景
-  static readonly BAR_BG: string = '#FDFBF7';
-  static readonly BAR_BG_DARK: string = '#262626';
-  static readonly PANEL_BG: string = '#FFFFFF';
+  static get BAR_BG(): string {
+    return Theme.isDarkMode() ? '#262626' : '#FDFBF7';
+  }
 
-  // 字体大小
+  static get BAR_BG_DARK(): string {
+    return '#262626'; // 保持原有常量
+  }
+
+  static get PANEL_BG(): string {
+    return Theme.isDarkMode() ? '#2D2D2D' : '#FFFFFF';
+  }
+
+  // 字体大小（保持不变）
   static readonly FONT_CHAPTER: number = 22;
   static readonly FONT_BODY: number = 18;
   static readonly FONT_SMALL: number = 14;
 
-  // 间距
+  // 间距（保持不变）
   static readonly PAGE_PADDING: number = 24;
-  // 修复：行高需要略大于字体大小，确保不重叠
-  static readonly LINE_HEIGHT: number = 32; // 原来是34，稍微减小以容纳更多行，但要确保大于FONT_BODY(18)
+  static readonly LINE_HEIGHT: number = 32;
 }
 
-// 布局配置（用于分页计算）
+// 布局配置（用于分页计算）- 保持不变
 export class LayoutConfig {
-  // 字符宽度估算（根据字体大小18sp估算）
-  // 修复：更精确的估算，中文约等于字体大小，英文约一半
-  static readonly CHAR_WIDTH: number = 9;  // 这个值在ReaderPage中不再直接使用，改用 FONT_BODY * 0.9
-
-  // 页面边距
+  static readonly CHAR_WIDTH: number = 9;
   static readonly TOP_MARGIN: number = 40;
   static readonly BOTTOM_MARGIN: number = 60;
-
-  // 修复：安全底部边距，防止最后一行被截断
   static readonly SAFE_BOTTOM_MARGIN: number = 20;
 }
 
-// 动画配置
+// 动画配置 - 保持不变
 export class Animations {
   static readonly FADE_IN: AnimationConfig = { duration: 200, curve: Curve.EaseInOut };
   static readonly SLIDE_UP: AnimationConfig = { duration: 300, curve: Curve.EaseOut };

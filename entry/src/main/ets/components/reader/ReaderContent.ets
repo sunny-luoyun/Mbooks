@@ -74,6 +74,9 @@ export struct ReaderContent {
   @Prop screenWidth: number = 360;
   @Prop screenHeight: number = 780;
 
+  // 监听系统颜色模式变化，触发重新渲染
+  @StorageProp('currentColorMode') currentColorMode: number = 0;
+
   onPageChange: (chapterIndex: number, pageIndex: number, globalPage: number) => void = () => {};
   onCenterTap: () => void = () => {};
 
@@ -112,6 +115,14 @@ export struct ReaderContent {
   onPagesChange() {
     if (this.pages.length > 0) {
       this.pageDataSource.updateData(this.pages);
+    }
+  }
+
+  // 监听颜色模式变化，强制刷新列表
+  onColorModeChange() {
+    // 颜色模式变化时，强制刷新数据源以触发重新渲染
+    if (this.pages.length > 0) {
+      this.pageDataSource.updateData([...this.pages]);
     }
   }
 
@@ -185,7 +196,7 @@ export struct ReaderContent {
           }
           .width('100%')
           .height(this.screenHeight) // 固定高度是关键
-          .backgroundColor(Theme.BG_COLOR)
+          .backgroundColor(Theme.BG_COLOR) // 使用动态颜色
         }, (page: PageData, index: number) => page.globalPageIndex.toString())
       }
       .width('100%')
@@ -214,14 +225,14 @@ export struct ReaderContent {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(Theme.BG_COLOR)
+    .backgroundColor(Theme.BG_COLOR) // 使用动态颜色
   }
 
   @Builder PageIndicator() {
     Column() {
       Text(`${this.currentGlobalPage + 1} / ${this.totalPages}`)
         .fontSize(11)
-        .fontColor(Theme.TEXT_SECONDARY)
+        .fontColor(Theme.TEXT_SECONDARY) // 使用动态颜色
         .opacity(0.6)
     }
     .position({ x: 0, y: '100%' })
@@ -240,7 +251,7 @@ export struct ReaderContent {
         Text(this.chapters[page.chapterIndex]?.title || '')
           .fontSize(Theme.FONT_CHAPTER)
           .fontWeight(FontWeight.Bold)
-          .fontColor(Theme.TEXT_MAIN)
+          .fontColor(Theme.TEXT_MAIN) // 使用动态颜色
           .width('100%')
           .textAlign(TextAlign.Center)
           .margin({ top: LayoutConfig.TOP_MARGIN, bottom: 20 })
@@ -254,7 +265,7 @@ export struct ReaderContent {
           ForEach(page.lines, (line: string, lineIdx: number) => {
             Text(line)
               .fontSize(Theme.FONT_BODY)
-              .fontColor(Theme.TEXT_MAIN)
+              .fontColor(Theme.TEXT_MAIN) // 使用动态颜色
               .width('100%') // 确保撑满父容器宽度
               .height(Theme.LINE_HEIGHT) // 固定行高
               .textAlign(TextAlign.Start)
@@ -277,7 +288,7 @@ export struct ReaderContent {
       top: page.pageIndexInChapter === 0 ? 0 : LayoutConfig.TOP_MARGIN,
       bottom: LayoutConfig.BOTTOM_MARGIN
     })
-    .backgroundColor(Theme.BG_COLOR)
+    .backgroundColor(Theme.BG_COLOR) // 使用动态颜色
     .alignItems(HorizontalAlign.Start)
   }
 }
