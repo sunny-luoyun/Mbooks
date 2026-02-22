@@ -159,7 +159,7 @@ export struct ReaderContent {
 
   @State private dataSource: LazyPageDataSource = new LazyPageDataSource();
   private listScroller: Scroller = new Scroller();
-  private currentGlobalPage: number = 0;
+  @State private currentGlobalPage: number = 0;
   private isJumping: boolean = false;
   private tapStartTime: number = 0;
   private tapStartX: number = 0;
