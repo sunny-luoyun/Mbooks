@@ -18,8 +18,8 @@ interface ReaderParams {
 
 export interface Chapter {
   title: string;
-  startPage: number;
-  endPage: number;
+  startPage: number; // 在performPagination前是字符索引，之后是全局页码索引
+  endPage: number;   // 同上
   level: number;
   pageCount: number;
 }
@@ -64,13 +64,13 @@ export const READER_EVENTS: ReaderEvents = {
 
 const CHAPTER_REGEX = /(?:第[一二三四五六七八九十百千零\d]+章|章节\s*\d+|Chapter\s*\d+|^\d+\.)\s*[^\n]*/gmi;
 const PREF_KEY_PREFIX = 'reader_';
+
 // 内存优化的 PageData 接口
 export interface PageData {
   chapterIndex: number;
   pageIndexInChapter: number;
   globalPageIndex: number;
   lines: string[];
-  // 不再存储 text，由组件计算
 }
 
 @Entry
@@ -225,10 +225,27 @@ struct ReaderPage {
     const newPages: PageData[] = [];
     let globalPageIndex = 0;
 
+    // 计算可用宽度和每行字符数
     const contentWidth = Math.max(100, this.screenWidth - Theme.PAGE_PADDING * 2);
-    const charsPerLine = Math.floor(contentWidth / LayoutConfig.CHAR_WIDTH);
+
+    // 修复：调整字符宽度系数，中文18sp字体实际宽度约为18px
+    // 原来使用 0.9 导致每行字符数过少，改为 1.0 或根据实际屏幕微调
+    const charWidth = Theme.FONT_BODY * 0.5; // 改为 1.0，让每行填充更多字符
+
+    // 考虑不同设备的屏幕密度，设置一个最小字符数保证可读性
+    const minCharsPerLine = 20;
+    let charsPerLine = Math.floor(contentWidth / charWidth);
+    if (charsPerLine < minCharsPerLine) {
+      charsPerLine = minCharsPerLine;
+    }
+
+    // 计算可用高度和每页行数
     const availableHeight = Math.max(200, this.screenHeight - LayoutConfig.TOP_MARGIN - LayoutConfig.BOTTOM_MARGIN);
-    const linesPerPage = Math.floor(availableHeight / Theme.LINE_HEIGHT);
+    // 修复：给每页底部留出安全边距，避免最后一行被截断
+    const safeAvailableHeight = availableHeight - LayoutConfig.SAFE_BOTTOM_MARGIN;
+    const linesPerPage = Math.floor(safeAvailableHeight / Theme.LINE_HEIGHT);
+
+    console.info(`分页参数: 屏幕宽=${this.screenWidth}, 内容宽=${contentWidth}, 每行字符=${charsPerLine}, 每页行数=${linesPerPage}`);
 
     // 限制最大页数，防止内存爆炸（约 5000 页，约 2-3MB 文本）
     const MAX_PAGES = 5000;
@@ -239,17 +256,21 @@ struct ReaderPage {
       const endIdx = chapter.endPage;
       const chapterContent = this.content.substring(startIdx, endIdx);
 
-      // 文本断行
+      // 文本断行 - 修复后的逻辑
       const lines = this.breakTextIntoLines(chapterContent, charsPerLine);
 
-      chapter.startPage = globalPageIndex; // 改为页码索引
+      // 记录章节起始页码（全局页码索引）
+      const chapterStartPage = globalPageIndex;
 
       let pageLines: string[] = [];
-      for (let line of lines) {
-        pageLines.push(line);
+      let lineIndex = 0;
 
+      while (lineIndex < lines.length && globalPageIndex < MAX_PAGES) {
+        pageLines.push(lines[lineIndex]);
+        lineIndex++;
+
+        // 当达到每页行数限制时，创建新页面
         if (pageLines.length >= linesPerPage) {
-          // 只存储 lines，不存储 text
           newPages.push({
             chapterIndex: chapterIdx,
             pageIndexInChapter: chapter.pageCount,
@@ -260,16 +281,10 @@ struct ReaderPage {
           pageLines = [];
           chapter.pageCount++;
           globalPageIndex++;
-
-          // 检查最大页数限制
-          if (globalPageIndex >= MAX_PAGES) {
-            console.warn(`达到最大页数限制 ${MAX_PAGES}，后续内容将被截断`);
-            break;
-          }
         }
       }
 
-      // 处理剩余行
+      // 处理剩余行（最后一页可能不满）
       if (pageLines.length > 0 && globalPageIndex < MAX_PAGES) {
         newPages.push({
           chapterIndex: chapterIdx,
@@ -281,10 +296,15 @@ struct ReaderPage {
         globalPageIndex++;
       }
 
+      // 更新章节的页码信息
+      chapter.startPage = chapterStartPage;
       chapter.endPage = globalPageIndex;
 
       // 提前退出检查
-      if (globalPageIndex >= MAX_PAGES) break;
+      if (globalPageIndex >= MAX_PAGES) {
+        console.warn(`达到最大页数限制 ${MAX_PAGES}，后续内容将被截断`);
+        break;
+      }
     }
 
     // 更新状态（触发 ReaderContent 重新渲染）
@@ -294,52 +314,119 @@ struct ReaderPage {
     console.info(`分页完成：共 ${this.totalPages} 页，${this.chapters.length} 章，内存页数 ${newPages.length}`);
   }
 
-  breakTextIntoLines(text: string, charsPerLine: number): string[] {
+  // 修复后的文本断行逻辑：避免字符被截断，处理英文单词边界
+  breakTextIntoLines(text: string, maxCharsPerLine: number): string[] {
     const lines: string[] = [];
-    let currentLine = '';
-    let currentWidth = 0;
+    const paragraphs = text.split('\n');
 
-    for (let i = 0; i < text.length; i++) {
-      const char = text[i];
-      const charWidth = this.getCharWidth(char);
-
-      if (char === '\n') {
-        if (currentLine) lines.push(currentLine);
-        currentLine = '';
-        currentWidth = 0;
-      } else if (currentWidth + charWidth > charsPerLine) {
-        // 行尾标点处理
-        if (this.isPunctuation(char) && currentLine.length > 0) {
-          currentLine += char;
-          lines.push(currentLine);
-          currentLine = '';
-          currentWidth = 0;
-        } else {
-          if (currentLine) lines.push(currentLine);
-          currentLine = char;
-          currentWidth = charWidth;
-        }
-      } else {
-        currentLine += char;
-        currentWidth += charWidth;
+    for (const paragraph of paragraphs) {
+      if (paragraph.length === 0) {
+        lines.push(''); // 保留空行
+        continue;
       }
-    }
 
-    if (currentLine) {
-      lines.push(currentLine);
+      let currentLine = '';
+      let currentWidth = 0;
+      let i = 0;
+
+      while (i < paragraph.length) {
+        const char = paragraph[i];
+        const charWidth = this.getCharWidth(char);
+
+        // 检查是否超出宽度限制
+        if (currentWidth + charWidth > maxCharsPerLine && currentLine.length > 0) {
+          // 处理行尾：避免标点符号在行首
+          if (this.isPunctuation(char) && !this.isStartPunctuation(char)) {
+            // 如果是结束标点，放在当前行末尾
+            currentLine += char;
+            lines.push(currentLine);
+            currentLine = '';
+            currentWidth = 0;
+            i++;
+          } else {
+            // 检查前一个字符是否是标点，避免标点留在行尾
+            const lastChar = currentLine[currentLine.length - 1];
+            if (this.isPunctuation(lastChar) && !this.isStartPunctuation(lastChar)) {
+              // 前一个字符是结束标点，可以换行
+              lines.push(currentLine);
+              currentLine = char;
+              currentWidth = charWidth;
+              i++;
+            } else {
+              // 尝试在单词边界断开（针对英文）
+              const breakPoint = this.findWordBreak(currentLine);
+              if (breakPoint > 0 && breakPoint < currentLine.length - 3) {
+                // 在单词边界断开
+                const remaining = currentLine.substring(breakPoint);
+                currentLine = currentLine.substring(0, breakPoint);
+                lines.push(currentLine);
+                currentLine = remaining + char;
+                currentWidth = this.calculateWidth(currentLine);
+              } else {
+                // 直接换行
+                lines.push(currentLine);
+                currentLine = char;
+                currentWidth = charWidth;
+              }
+              i++;
+            }
+          }
+        } else {
+          currentLine += char;
+          currentWidth += charWidth;
+          i++;
+        }
+      }
+
+      // 处理段落剩余内容
+      if (currentLine.length > 0) {
+        lines.push(currentLine);
+      }
     }
 
     return lines;
   }
 
+  // 查找单词断开点（从右向左找空格或标点）
+  private findWordBreak(line: string): number {
+    for (let i = line.length - 1; i > 0; i--) {
+      if (line[i] === ' ' || line[i] === '\t') {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  // 计算字符串宽度
+  private calculateWidth(str: string): number {
+    let width = 0;
+    for (const char of str) {
+      width += this.getCharWidth(char);
+    }
+    return width;
+  }
+
   getCharWidth(char: string): number {
     // 中文字符和全角字符占2，英文占1
     const code = char.charCodeAt(0);
-    return (code > 127 || (code >= 0xFF01 && code <= 0xFF5E)) ? 2 : 1;
+    // CJK Unified Ideographs: 4E00-9FFF
+    // Fullwidth ASCII: FF01-FF5E
+    // Halfwidth Katakana: FF65-FF9F
+    if (code >= 0x4E00 && code <= 0x9FFF) return 2; // CJK
+    if (code >= 0xFF01 && code <= 0xFF5E) return 2; // Fullwidth
+    if (code >= 0x3000 && code <= 0x303F) return 2; // CJK punctuation
+    if (code >= 0x3040 && code <= 0x309F) return 2; // Hiragana
+    if (code >= 0x30A0 && code <= 0x30FF) return 2; // Katakana
+    return 1; // ASCII and others
+  }
+  // 判断是否为标点符号
+  isPunctuation(char: string): boolean {
+    return '，。！？；：、.,;:!?"\'()[]'.includes(char);
   }
 
-  isPunctuation(char: string): boolean {
-    return '，。！？；：""\'\'（）【】、'.includes(char);
+  // 判断是否为行首标点（这些标点不应该出现在行首）
+  isStartPunctuation(char: string): boolean {
+    return '，。！？；：、.,;:!?）】》'.includes(char);
   }
 
   parseChapters(): void {

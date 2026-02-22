@@ -2,6 +2,7 @@
 import { Chapter, READER_EVENTS, JumpToPageData, PageData } from '../../pages/ReaderPage';
 import { Theme, LayoutConfig } from './ReaderStyles';
 import emitter from '@ohos.events.emitter';
+
 // 构造函数参数接口
 interface PageDataConstructorParams {
   chapterIndex: number;
@@ -16,6 +17,7 @@ class PageDataImpl implements PageData {
   pageIndexInChapter: number;
   globalPageIndex: number;
   lines: string[];
+
   constructor(data: PageDataConstructorParams) {
     this.chapterIndex = data.chapterIndex;
     this.pageIndexInChapter = data.pageIndexInChapter;
@@ -28,10 +30,12 @@ class PageDataImpl implements PageData {
     return this.lines.join('\n');
   }
 }
+
 // LazyForEach 数据源
 class PageDataSource implements IDataSource {
   private pages: PageData[];
   private listeners: DataChangeListener[] = [];
+
   constructor(pages: PageData[]) {
     this.pages = pages;
   }
@@ -39,6 +43,7 @@ class PageDataSource implements IDataSource {
   totalCount(): number {
     return this.pages.length;
   }
+
   getData(index: number): PageData {
     return this.pages[index];
   }
@@ -53,12 +58,14 @@ class PageDataSource implements IDataSource {
       this.listeners.splice(idx, 1);
     }
   }
+
   // 更新数据时通知
   updateData(newPages: PageData[]) {
     this.pages = newPages;
     this.listeners.forEach(l => l.onDataReloaded());
   }
 }
+
 @Component
 export struct ReaderContent {
   @Prop pages: PageData[] = [];
@@ -225,6 +232,7 @@ export struct ReaderContent {
     .hitTestBehavior(HitTestMode.None)
     .zIndex(5)
   }
+
   @Builder PageBuilder(page: PageData, index: number) {
     Column() {
       // 章节标题（仅章节第一页显示）
@@ -239,15 +247,27 @@ export struct ReaderContent {
           .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
-      // 页面内容
-      Text(page.lines.join('\n'))
-        .fontSize(Theme.FONT_BODY)
-        .lineHeight(Theme.LINE_HEIGHT)
-        .fontColor(Theme.TEXT_MAIN)
+
+      // 页面内容 - 修复：使用 Stack 包裹确保撑满宽度，每行 Text 设置 100% 宽度
+      Stack({ alignContent: Alignment.TopStart }) {
+        Column() {
+          ForEach(page.lines, (line: string, lineIdx: number) => {
+            Text(line)
+              .fontSize(Theme.FONT_BODY)
+              .fontColor(Theme.TEXT_MAIN)
+              .width('100%') // 确保撑满父容器宽度
+              .height(Theme.LINE_HEIGHT) // 固定行高
+              .textAlign(TextAlign.Start)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Clip })
+          }, (line: string, lineIdx: number) => lineIdx.toString())
+        }
         .width('100%')
-        .layoutWeight(1)
-        .textAlign(TextAlign.Start)
-        .letterSpacing(0.5) // 稍微增加字间距，提升阅读体验
+        .height('100%')
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .layoutWeight(1)
     }
     .width('100%')
     .height('100%')
@@ -258,5 +278,6 @@ export struct ReaderContent {
       bottom: LayoutConfig.BOTTOM_MARGIN
     })
     .backgroundColor(Theme.BG_COLOR)
+    .alignItems(HorizontalAlign.Start)
   }
 }
