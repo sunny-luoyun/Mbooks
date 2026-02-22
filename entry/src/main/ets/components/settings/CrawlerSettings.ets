@@ -2,6 +2,57 @@
 import { CrawlerConfig } from '../../models/SettingsModels';
 import { SettingsService } from '../../services/SettingsService';
 import promptAction from '@ohos.promptAction';
+import { Configuration } from '@ohos.app.ability.Configuration';
+import common from '@ohos.app.ability.common';
+
+interface ColorConfig {
+  pageBg: string;
+  cardBg: string;
+  headerBg: string;
+  primaryText: string;
+  secondaryText: string;
+  tertiaryText: string;
+  accentText: string;
+  dangerText: string;
+  sliderTrack: string;
+  sliderBlock: string;
+  toggleOn: string;
+  toggleOff: string;
+  hintText: string;
+  divider: string;
+}
+
+// 颜色配置函数 - 根据模式返回对应颜色
+function getCrawlerSettingsColors(mode: number): ColorConfig {
+  const isDark = mode === 0; // ColorMode.Dark = 1
+  return {
+    // 背景色
+    pageBg: isDark ? '#0D0D0D' : '#F5F5F5',
+    cardBg: isDark ? '#1E1E1E' : '#FFFFFF',
+    headerBg: isDark ? '#141414' : '#FFFFFF',
+
+    // 文字色
+    primaryText: isDark ? '#E6E6E6' : '#000000',
+    secondaryText: isDark ? '#999999' : '#666666',
+    tertiaryText: isDark ? '#666666' : '#999999',
+    accentText: '#007DFF',
+    dangerText: '#FF4D4F',
+
+    // 滑块颜色
+    sliderTrack: isDark ? '#3A3A3A' : '#E5E5E5',
+    sliderBlock: '#007DFF',
+
+    // 开关颜色
+    toggleOn: '#007DFF',
+    toggleOff: isDark ? '#3A3A3A' : '#CCCCCC',
+
+    // 提示文字
+    hintText: isDark ? '#555555' : '#999999',
+
+    // 分割线（如有需要）
+    divider: isDark ? '#2A2A2A' : '#E5E5E5'
+  };
+}
 
 @Component
 export struct CrawlerSettings {
@@ -13,9 +64,11 @@ export struct CrawlerSettings {
     autoCheckOnStartup: false,
     checkIntervalHours: 0
   };
-
+  @State colorMode: number = 0; // 0 = Light, 1 = Dark
   private settingsService: SettingsService | null = null;
   private unsubscribe: (() => void) | null = null;
+  private configChangeCallback: () => void = () => {};
+  private configCallbackId: number = -1;
 
   aboutToAppear(): void {
     this.settingsService = SettingsService.getInstance(getContext(this));
@@ -25,12 +78,32 @@ export struct CrawlerSettings {
     this.unsubscribe = this.settingsService.subscribe((settings): void => {
       this.localConfig = this.copyConfig(settings.crawler);
     });
+    // 初始化颜色模式
+    const ctx = getContext(this) as common.UIAbilityContext;
+    this.colorMode = ctx.config?.colorMode || 0;
+    // 监听系统颜色模式变化 - 使用ApplicationContext的配置监听
+    this.configChangeCallback = () => {
+      this.colorMode = ctx.config?.colorMode || 0;
+    };
+    this.configCallbackId = ctx.getApplicationContext().on('environment', {
+      onConfigurationUpdated: this.configChangeCallback,
+      onMemoryLevel: (level: number) => {
+        // 内存级别变化的处理
+      }
+    });
   }
-
   aboutToDisappear(): void {
     if (this.unsubscribe) {
       this.unsubscribe();
     }
+    const ctx = getContext(this) as common.UIAbilityContext;
+    if (this.configCallbackId !== -1) {
+      ctx.getApplicationContext().off('environment', this.configCallbackId);
+    }
+  }
+  // 获取当前颜色配置
+  private getColors(): ColorConfig {
+    return getCrawlerSettingsColors(this.colorMode);
   }
 
   // 深拷贝配置
@@ -44,6 +117,7 @@ export struct CrawlerSettings {
       checkIntervalHours: config.checkIntervalHours
     };
   }
+
   // 关键方法：更新指定字段，替换整个对象触发UI
   private setConfigField(
     field: string,
@@ -108,11 +182,19 @@ export struct CrawlerSettings {
   ItemHeader(title: string, desc: string, value: string) {
     Row() {
       Column() {
-        Text(title).fontSize(16).fontWeight(FontWeight.Medium)
-        Text(desc).fontSize(12).fontColor('#999').margin({ top: 4 })
+        Text(title)
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.getColors().primaryText)
+        Text(desc)
+          .fontSize(12)
+          .fontColor(this.getColors().tertiaryText)
+          .margin({ top: 4 })
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
 
-      Text(value).fontSize(14).fontColor('#007DFF')
+      Text(value)
+        .fontSize(14)
+        .fontColor(this.getColors().accentText)
     }.width('100%').margin({ bottom: 8 })
   }
 
@@ -120,11 +202,14 @@ export struct CrawlerSettings {
     Column() {
       // 标题栏
       Row() {
-        Text('爬取参数').fontSize(20).fontWeight(FontWeight.Bold)
+        Text('爬取参数')
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.getColors().primaryText)
         Blank()
         Button('重置')
           .fontSize(14)
-          .fontColor('#FF4D4F')
+          .fontColor(this.getColors().dangerText)
           .backgroundColor(Color.Transparent)
           .onClick(() => this.resetToDefault())
       }
@@ -142,6 +227,9 @@ export struct CrawlerSettings {
         })
           .width('100%')
           .showTips(true)
+          .trackColor(this.getColors().sliderTrack)
+          .blockColor(this.getColors().sliderBlock)
+          .selectedColor(this.getColors().accentText)
           .onChange((val: number, mode: SliderChangeMode): void => {
             // 实时更新UI（不保存到Service）
             this.setConfigField('maxPagesPerRun', val, false);
@@ -153,7 +241,7 @@ export struct CrawlerSettings {
       }
       .width('100%')
       .padding(16)
-      .backgroundColor('#FFF')
+      .backgroundColor(this.getColors().cardBg)
       .borderRadius(12)
       .margin({ bottom: 12 })
 
@@ -168,6 +256,9 @@ export struct CrawlerSettings {
         })
           .width('100%')
           .showTips(true)
+          .trackColor(this.getColors().sliderTrack)
+          .blockColor(this.getColors().sliderBlock)
+          .selectedColor(this.getColors().accentText)
           .onChange((val: number, mode: SliderChangeMode): void => {
             this.setConfigField('stopAfterOldPages', val, false);
             if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
@@ -177,7 +268,7 @@ export struct CrawlerSettings {
       }
       .width('100%')
       .padding(16)
-      .backgroundColor('#FFF')
+      .backgroundColor(this.getColors().cardBg)
       .borderRadius(12)
       .margin({ bottom: 12 })
 
@@ -192,6 +283,9 @@ export struct CrawlerSettings {
         })
           .width('100%')
           .showTips(true)
+          .trackColor(this.getColors().sliderTrack)
+          .blockColor(this.getColors().sliderBlock)
+          .selectedColor(this.getColors().accentText)
           .onChange((val: number, mode: SliderChangeMode): void => {
             this.setConfigField('requestDelay', val, false);
             if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
@@ -201,7 +295,7 @@ export struct CrawlerSettings {
       }
       .width('100%')
       .padding(16)
-      .backgroundColor('#FFF')
+      .backgroundColor(this.getColors().cardBg)
       .borderRadius(12)
       .margin({ bottom: 12 })
 
@@ -227,6 +321,9 @@ export struct CrawlerSettings {
           })
             .width('100%')
             .showTips(true)
+            .trackColor(this.getColors().sliderTrack)
+            .blockColor(this.getColors().sliderBlock)
+            .selectedColor(this.getColors().accentText)
             .onChange((val: number, mode: SliderChangeMode): void => {
               this.setConfigField('checkIntervalHours', val, false);
               if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
@@ -235,12 +332,12 @@ export struct CrawlerSettings {
             })
           Text('设为0表示仅启动时检查一次')
             .fontSize(11)
-            .fontColor('#999')
+            .fontColor(this.getColors().hintText)
             .margin({ top: 8 })
         }
         .width('100%')
         .padding(16)
-        .backgroundColor('#FFF')
+        .backgroundColor(this.getColors().cardBg)
         .borderRadius(12)
         .margin({ bottom: 12 })
       }
@@ -248,27 +345,36 @@ export struct CrawlerSettings {
       // 底部说明
       Text('提示：请求间隔建议保持800ms以上，避免被封IP')
         .fontSize(12)
-        .fontColor('#999')
+        .fontColor(this.getColors().hintText)
         .margin({ top: 8, bottom: 20 })
     }
     .width('100%')
     .padding({ left: 16, right: 16 })
+    .backgroundColor(this.getColors().pageBg)
   }
 
   @Builder
   ToggleItemBuilder(title: string, desc: string, isOn: boolean, onChange: (val: boolean) => void) {
     Row() {
       Column() {
-        Text(title).fontSize(16).fontWeight(FontWeight.Medium)
-        Text(desc).fontSize(12).fontColor('#999').margin({ top: 4 })
+        Text(title)
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.getColors().primaryText)
+        Text(desc)
+          .fontSize(12)
+          .fontColor(this.getColors().tertiaryText)
+          .margin({ top: 4 })
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
 
       Toggle({ type: ToggleType.Switch, isOn: isOn })
         .onChange(onChange)
+        .selectedColor(this.getColors().toggleOn)
+        .switchPointColor(this.getColors().cardBg)
     }
     .width('100%')
     .padding(16)
-    .backgroundColor('#FFF')
+    .backgroundColor(this.getColors().cardBg)
     .borderRadius(12)
     .margin({ bottom: 12 })
   }

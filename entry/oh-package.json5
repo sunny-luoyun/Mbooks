@@ -5,6 +5,11 @@
   "main": "",
   "author": "",
   "license": "",
-  "dependencies": {}
+  "dependencies": {
+    "@ohos.app.ability.common": "^1.0.0",
+    "@ohos.app.ability.Configuration": "^1.0.0",
+    "@ohos.abilityAccessCtrl": "^1.0.0",
+    "@ohos.promptAction": "^1.0.0",
+    "@ohos.app.ability.ConfigurationConstant": "^1.0.0"
+  }
 }
-

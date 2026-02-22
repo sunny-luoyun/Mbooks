@@ -7,18 +7,7 @@ import { ThreadItem } from '../models/SettingsModels';
 import http from '@ohos.net.http';
 import fs from '@ohos.file.fs';
 import { DownloadService } from '../services/DownloadService';
-
-interface DetailParams {
-  threadId: string;
-  title: string;
-}
-
-interface PostContent {
-  pid: string;
-  author: string;
-  content: string;
-  time: string;
-}
+import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
 
 interface ThreadDetail {
   threadId: string;
@@ -29,9 +18,19 @@ interface ThreadDetail {
   totalPosts: number;
 }
 
+interface PostContent {
+  pid: string;
+  author: string;
+  content: string;
+  time: string;
+}
+
 @Entry
 @Component
 struct DetailPage {
+  // 监听系统颜色模式变化
+  @StorageProp('currentColorMode') currentMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
+
   @State threadId: string = '';
   @State title: string = '';
   @State threadDetail: ThreadDetail | null = null;
@@ -45,7 +44,12 @@ struct DetailPage {
   private crawler: CrawlerService | null = null;
   private settings: SettingsService | null = null;
   private readonly BASE_URL = "https://mirror.chromaso.net";
-  private downloadService: DownloadService | null = null; // 新增这一行
+  private downloadService: DownloadService | null = null;
+
+  // 辅助函数：判断是否为深色模式
+  isDarkMode(): boolean {
+    return this.currentMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+  }
 
   aboutToAppear(): void {
     const params = router.getParams() as Record<string, Object>;
@@ -154,7 +158,6 @@ struct DetailPage {
 
       if (response.responseCode === 200) {
         const html = response.result as string;
-        console.log('[DetailPage] HTML length:', html.length);
         return this.parseContentFromHtml(html);
       } else {
         return '获取内容失败: HTTP ' + response.responseCode;
@@ -167,29 +170,19 @@ struct DetailPage {
     }
   }
 
-
   private parseContentFromHtml(html: string): string {
     try {
-      // 方法1: 查找第一个 mm-post 的 card-body
       const postStart = html.indexOf('<div id="p');
       if (postStart === -1) return '未找到帖子内容';
-
-      // 找到这个帖子的 card-body
       const cardBodyIdx = html.indexOf('<div class="card-body"', postStart);
       if (cardBodyIdx === -1) return '未找到内容区域';
-
       const contentStart = html.indexOf('>', cardBodyIdx) + 1;
-
-      // 找到对应的 </div>（处理嵌套）
       let depth = 1;
       let pos = contentStart;
-
       while (depth > 0 && pos < html.length) {
         const open = html.indexOf('<div', pos);
         const close = html.indexOf('</div>', pos);
-
         if (close === -1) break;
-
         if (open !== -1 && open < close) {
           depth++;
           pos = open + 4;
@@ -202,77 +195,42 @@ struct DetailPage {
           pos = close + 6;
         }
       }
-
       return '解析内容失败: 无法确定内容边界';
-
     } catch (e) {
-      console.error('Parse error:', e);
       return '解析内容失败: ' + JSON.stringify(e);
     }
   }
 
   private cleanHtmlContent(html: string): string {
     if (!html) return '内容为空';
-
     let text = html;
-
-    // 1. 将 <br> 替换为换行 - 修复：使用 RegExp
     const brRegex = new RegExp('<br\\s*/?>', 'gi');
     text = text.replace(brRegex, '\n');
-
-    // 2. 将 <p> 和 </p> 处理为段落
     const pCloseOpenRegex = new RegExp('</p>\\s*<p[^>]*>', 'gi');
     text = text.replace(pCloseOpenRegex, '\n\n');
-
     const pOpenRegex = new RegExp('<p[^>]*>', 'gi');
     text = text.replace(pOpenRegex, '');
-
     const pCloseRegex = new RegExp('</p>', 'gi');
     text = text.replace(pCloseRegex, '');
-
-    // 3. 移除所有 HTML 标签
     const tagRegex = new RegExp('<[^>]+>', 'g');
     text = text.replace(tagRegex, '');
-
-    // 4. 解码 HTML 实体
     const entities: Record<string, string> = {
-      '&nbsp;': ' ',
-      '&lt;': '<',
-      '&gt;': '>',
-      '&amp;': '&',
-      '&quot;': '"',
-      '&#39;': "'",
-      '&mdash;': '—',
-      '&ndash;': '–',
-      '&hellip;': '…',
-      '&ldquo;': '“',
-      '&rdquo;': '”',
-      '&lsquo;': '‘',
-      '&rsquo;': '’'
+      '&nbsp;': ' ', '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"',
+      '&#39;': "'", '&mdash;': '—', '&ndash;': '–', '&hellip;': '…',
+      '&ldquo;': '“', '&碰rdquo;': '”', '&lsquo;': '‘', '&rsquo;': '’'
     };
     for (const entry of Object.entries(entities)) {
-      const entity = entry[0];
-      const char = entry[1];
-      const entityRegex = new RegExp(entity, 'g');
-      text = text.replace(entityRegex, char);
+      text = text.replace(new RegExp(entry[0], 'g'), entry[1]);
     }
-
-    // 5. 解码数字实体
     const decRegex = new RegExp('&#(\\d+);', 'g');
     text = text.replace(decRegex, (match: string, dec: string) => String.fromCharCode(parseInt(dec)));
-
     const hexRegex = new RegExp('&#x([0-9a-f]+);', 'gi');
     text = text.replace(hexRegex, (match: string, hex: string) => String.fromCharCode(parseInt(hex, 16)));
-
-    // 6. 清理多余空白
     text = text.replace(/\n[ \t]+\n/g, '\n\n');
     text = text.replace(/[ \t]+/g, ' ');
     text = text.replace(/\n{4,}/g, '\n\n\n');
-    text = text.trim();
-
-    return text;
+    return text.trim();
   }
-
 
   checkWatchStatus(): void {
     if (!this.settings) return;
@@ -285,7 +243,6 @@ struct DetailPage {
 
   toggleWatchAuthor(): void {
     if (!this.settings || !this.threadDetail) return;
-
     if (this.isWatchedAuthor) {
       this.settings.removeWatchedAuthor(this.threadDetail.author);
       promptAction.showToast({ message: '已取消关注作者' });
@@ -298,7 +255,6 @@ struct DetailPage {
 
   toggleWatchBook(): void {
     if (!this.settings) return;
-
     if (this.isWatchedBook) {
       this.settings.removeWatchedBook(this.threadId);
       promptAction.showToast({ message: '已取消关注帖子' });
@@ -311,55 +267,26 @@ struct DetailPage {
 
   async downloadContent(): Promise<void> {
     if (this.isDownloading || !this.downloadService || !this.threadDetail) return;
-
     this.isDownloading = true;
     this.downloadProgress = 0;
-
-    // 为了防止部分情况下抓取不到 author，做好兜底
     const author = this.threadDetail.author !== '未知' ? this.threadDetail.author : '楼主';
-
     try {
-      // 调用我们在 DownloadService 中写的核心逻辑，并传入进度回调修改 UI
       const success = await this.downloadService.downloadThread(
-        this.threadId,
-        this.threadDetail.title,
-        author,
-        (progress: number) => {
-          this.downloadProgress = progress; // 实时更新进度条
-        }
+        this.threadId, this.threadDetail.title, author,
+        (p: number) => { this.downloadProgress = p; }
       );
-
       if (success) {
         promptAction.showToast({ message: '✨ 下载/更新完成！' });
-        // 重新加载本地内容以刷新阅读区域
         this.loadDetail();
       } else {
-        promptAction.showToast({ message: '⚠️ 下载失败，请检查网络或帖子状态' });
+        promptAction.showToast({ message: '⚠️ 下载失败' });
       }
     } catch (e) {
-      console.error('Download module error:', e);
       promptAction.showToast({ message: '⚠️ 下载发生异常' });
     } finally {
       this.isDownloading = false;
-      this.downloadProgress = 0; // 重置或设为 100
+      this.downloadProgress = 0;
     }
-  }
-
-  private async saveToLocal(content: string): Promise<void> {
-    const dir = `${(getContext(this) as Context).filesDir}/threads`;
-    const filePath = `${dir}/${this.threadId}.txt`;
-
-    try {
-      if (!fs.accessSync(dir)) {
-        fs.mkdirSync(dir);
-      }
-    } catch (e) {
-      // 目录可能已存在
-    }
-
-    const file = fs.openSync(filePath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-    fs.writeSync(file.fd, content);
-    fs.closeSync(file);
   }
 
   @Builder
@@ -367,23 +294,19 @@ struct DetailPage {
     Row() {
       Text('❮ 返回')
         .fontSize(16)
-        .fontColor('#007DFF')
+        .fontColor(this.isDarkMode() ? '#409EFF' : '#007DFF')
         .onClick(() => router.back())
-
       Blank()
-
       Text('帖子详情')
         .fontSize(18)
         .fontWeight(FontWeight.Bold)
-
+        .fontColor(this.isDarkMode() ? '#E5E5E5' : '#1A1A1A')
       Blank()
-
-      Text('    ')
-        .fontSize(16)
+      Text('    ').fontSize(16)
     }
     .width('100%')
     .padding(16)
-    .backgroundColor('#FFF')
+    .backgroundColor(this.isDarkMode() ? '#1A1A1A' : '#FFFFFF')
   }
 
   @Builder
@@ -391,8 +314,8 @@ struct DetailPage {
     Row({ space: 12 }) {
       Button(this.isWatchedAuthor ? '⭐ 已关注作者' : '关注作者')
         .fontSize(14)
-        .fontColor(this.isWatchedAuthor ? '#52C41A' : '#007DFF')
-        .backgroundColor(this.isWatchedAuthor ? '#F6FFED' : '#E6F2FF')
+        .fontColor(this.isWatchedAuthor ? (this.isDarkMode() ? '#73D13D' : '#52C41A') : '#007DFF')
+        .backgroundColor(this.isWatchedAuthor ? (this.isDarkMode() ? '#1C2D12' : '#F6FFED') : (this.isDarkMode() ? '#1A2B3C' : '#E6F2FF'))
         .layoutWeight(1)
         .height(44)
         .borderRadius(8)
@@ -400,8 +323,8 @@ struct DetailPage {
 
       Button(this.isWatchedBook ? '📚 已关注' : '关注帖子')
         .fontSize(14)
-        .fontColor(this.isWatchedBook ? '#FA8C16' : '#007DFF')
-        .backgroundColor(this.isWatchedBook ? '#FFF7E6' : '#E6F2FF')
+        .fontColor(this.isWatchedBook ? (this.isDarkMode() ? '#FFBB96' : '#FA8C16') : '#007DFF')
+        .backgroundColor(this.isWatchedBook ? (this.isDarkMode() ? '#3E2613' : '#FFF7E6') : (this.isDarkMode() ? '#1A2B3C' : '#E6F2FF'))
         .layoutWeight(1)
         .height(44)
         .borderRadius(8)
@@ -418,25 +341,21 @@ struct DetailPage {
         Column() {
           Text('正在下载...')
             .fontSize(14)
-            .fontColor('#666')
-          Progress({
-            value: this.downloadProgress,
-            total: 100,
-            type: ProgressType.Linear
-          })
+            .fontColor(this.isDarkMode() ? '#999' : '#666')
+          Progress({ value: this.downloadProgress, total: 100, type: ProgressType.Linear })
             .width('100%')
             .margin({ top: 12 })
         }
         .width('100%')
         .padding(16)
-        .backgroundColor('#F5F5F5')
+        .backgroundColor(this.isDarkMode() ? '#2A2A2A' : '#F5F5F5')
         .borderRadius(8)
       } else {
         Button('📥 下载到本地')
           .width('100%')
           .height(50)
           .fontSize(16)
-          .backgroundColor('#007DFF')
+          .backgroundColor(this.isDarkMode() ? '#1E5CAB' : '#007DFF')
           .borderRadius(8)
           .enabled(!this.isLoading)
           .onClick(() => this.downloadContent())
@@ -450,139 +369,101 @@ struct DetailPage {
   ContentPreview() {
     Column() {
       if (this.isLoading) {
-        LoadingProgress()
-          .width(40)
-          .height(40)
-        Text('加载中...')
-          .fontSize(14)
-          .fontColor('#999')
-          .margin({ top: 12 })
+        LoadingProgress().width(40).height(40)
+        Text('加载中...').fontSize(14).fontColor('#999').margin({ top: 12 })
       } else if (this.errorMsg) {
         Column() {
-          Text('⚠️ ' + this.errorMsg)
-            .fontSize(14)
-            .fontColor('#FF4D4F')
-            .margin({ top: 50 })
-            .textAlign(TextAlign.Center)
-          Button('重新加载')
-            .margin({ top: 16 })
-            .onClick(() => this.loadDetail())
-        }
-        .width('100%')
-      } else if (this.threadDetail && this.threadDetail.posts.length > 0) {
-        // 标题
+          Text('⚠️ ' + this.errorMsg).fontSize(14).fontColor('#FF4D4F').textAlign(TextAlign.Center)
+          Button('重新加载').margin({ top: 16 }).onClick(() => this.loadDetail())
+        }.width('100%').padding(20)
+      } else if (this.threadDetail) {
         Text(this.threadDetail.title)
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
+          .fontColor(this.isDarkMode() ? '#E5E5E5' : '#1A1A1A')
           .width('100%')
           .margin({ bottom: 12 })
 
-        // 作者
         Row() {
           Text('作者: ' + this.threadDetail.author)
             .fontSize(14)
-            .fontColor('#666')
+            .fontColor(this.isDarkMode() ? '#999' : '#666')
           if (this.isWatchedAuthor) {
-            Text(' ⭐')
-              .fontSize(12)
-              .fontColor('#52C41A')
+            Text(' ⭐').fontSize(12).fontColor('#52C41A')
           }
-        }
-        .width('100%')
-        .margin({ bottom: 8 })
+        }.width('100%').margin({ bottom: 8 })
 
-        // 标签
         if (this.threadDetail.tags.length > 0) {
           Flex({ wrap: FlexWrap.Wrap }) {
             ForEach(this.threadDetail.tags, (tag: string) => {
               Text(tag)
                 .fontSize(10)
-                .fontColor('#007DFF')
-                .backgroundColor('#E6F2FF')
+                .fontColor(this.isDarkMode() ? '#409EFF' : '#007DFF')
+                .backgroundColor(this.isDarkMode() ? '#1A2B3C' : '#E6F2FF')
                 .padding({ left: 8, right: 8, top: 2, bottom: 2 })
                 .borderRadius(4)
                 .margin({ right: 8, bottom: 4 })
             }, (tag: string) => tag)
-          }
-          .width('100%')
-          .margin({ bottom: 12 })
+          }.width('100%').margin({ bottom: 12 })
         }
 
-        // 内容预览框
         Column() {
           Row() {
-            Text('内容预览')
-              .fontSize(12)
-              .fontColor('#999')
+            Text('内容预览').fontSize(12).fontColor(this.isDarkMode() ? '#666' : '#999')
             Blank()
             Text('🔗 浏览器打开')
               .fontSize(12)
-              .fontColor('#007DFF')
-              .onClick(() => {
-                const url = `${this.BASE_URL}/thread/${this.threadId}`;
-                promptAction.showToast({ message: 'URL: ' + url });
-              })
-          }
-          .width('100%')
-          .margin({ bottom: 8 })
+              .fontColor(this.isDarkMode() ? '#409EFF' : '#007DFF')
+              .onClick(() => promptAction.showToast({ message: 'URL: ' + this.BASE_URL + '/thread/' + this.threadId }))
+          }.width('100%').margin({ bottom: 8 })
 
-          // 可滚动的内容区域
           Scroll() {
             Text(this.threadDetail.posts[0].content)
               .fontSize(14)
-              .fontColor('#333')
+              .fontColor(this.isDarkMode() ? '#CCCCCC' : '#333333')
               .width('100%')
               .lineHeight(24)
           }
           .width('100%')
           .height(400)
-          .backgroundColor('#FFF')
+          .backgroundColor(this.isDarkMode() ? '#1A1A1A' : '#FFFFFF')
           .padding(8)
         }
         .width('100%')
         .padding(12)
-        .backgroundColor('#F0F0F0')
+        .backgroundColor(this.isDarkMode() ? '#242424' : '#F0F0F0')
         .borderRadius(8)
-        .margin({ top: 8 })
-      } else {
-        Text('暂无内容')
-          .fontSize(16)
-          .fontColor('#999')
-          .margin({ top: 50 })
       }
     }
     .width('100%')
     .padding(16)
-    .backgroundColor('#FFF')
+    .backgroundColor(this.isDarkMode() ? '#1A1A1A' : '#FFFFFF')
     .borderRadius(12)
-    .margin({ left: 16, right: 16 })
   }
 
   build() {
     Column() {
       this.HeaderBar()
-
       Scroll() {
         Column({ space: 16 }) {
           this.ContentPreview()
           this.ActionButtons()
           this.DownloadSection()
-
           Text('💡 提示：关注作者可在"最新"页面高亮显示')
             .fontSize(12)
-            .fontColor('#999')
+            .fontColor(this.isDarkMode() ? '#555' : '#999')
             .width('100%')
             .textAlign(TextAlign.Center)
-            .padding({ left: 32, right: 32, top: 20, bottom: 32 })
+            .padding({ bottom: 32 })
         }
         .width('100%')
       }
       .width('100%')
       .layoutWeight(1)
-      .backgroundColor('#F5F5F5')
+      .backgroundColor(this.isDarkMode() ? '#000000' : '#F5F5F5')
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#FFF')
+    .backgroundColor(this.isDarkMode() ? '#000000' : '#FFFFFF')
   }
 }

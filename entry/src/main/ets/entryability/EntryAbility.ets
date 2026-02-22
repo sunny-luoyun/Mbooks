@@ -1,48 +1,33 @@
-import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
+// entry/src/main/ets/entryability/EntryAbility.ets
+import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
-
-const DOMAIN = 0x0000;
+import { Configuration } from '@kit.AbilityKit';
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    try {
-      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
-    } catch (err) {
-      hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
-    }
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
+    // ✅ 1. 初始化时，将当前的颜色模式存入 AppStorage
+    AppStorage.setOrCreate('currentColorMode', this.context.config.colorMode);
   }
 
-  onDestroy(): void {
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
+  // ✅ 2. 关键：当系统切换深色/浅色模式时，此回调会被触发
+  onConfigurationUpdate(newConfig: Configuration): void {
+    // 将变更后的模式同步到 AppStorage，这会触发 Index.ets 中 @StorageProp 的自动刷新
+    AppStorage.setOrCreate('currentColorMode', newConfig.colorMode);
+    console.info(`[EntryAbility] ColorMode updated to: ${newConfig.colorMode}`);
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
-    // Main window is created, set main page for this ability
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
-
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
-        hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
+        console.error('Failed to load the content. Cause: %{public}s', JSON.stringify(err) ?? '');
         return;
       }
-      hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
     });
   }
 
-  onWindowStageDestroy(): void {
-    // Main window is destroyed, release UI related resources
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
-  }
-
-  onForeground(): void {
-    // Ability has brought to foreground
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
-  }
-
-  onBackground(): void {
-    // Ability has back to background
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
-  }
+  // 其他生命周期函数保持默认即可...
+  onWindowStageDestroy(): void {}
+  onForeground(): void {}
+  onBackground(): void {}
+  onDestroy(): void {}
 }

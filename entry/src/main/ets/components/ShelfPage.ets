@@ -2,6 +2,8 @@
 import router from '@ohos.router';
 import fs from '@ohos.file.fs';
 import promptAction from '@ohos.promptAction';
+import common from '@ohos.app.ability.common';
+import { ConfigurationConstant } from '@kit.AbilityKit';
 import { CrawlerService } from '../services/CrawlerService';
 import { DownloadResult } from '../models/SettingsModels';
 import { ThreadMeta } from '../services/DownloadService';
@@ -18,11 +20,62 @@ interface LocalBook {
   updateTime: number;
   chapterCount: number;
 }
-
 interface ReaderParams {
   fileName: string;
   title: string;
   threadId: string;
+}
+
+interface ShelfColors {
+  pageBg: string;
+  cardBg: string;
+  headerBg: string;
+  batchBarBg: string;
+  primaryText: string;
+  secondaryText: string;
+  tertiaryText: string;
+  accentText: string;
+  primaryBtnBg: string;
+  secondaryBtnBg: string;
+  dangerBtnBg: string;
+  primaryBtnText: string;
+  secondaryBtnText: string;
+  dangerBtnText: string;
+  shadow: string;
+  chapterTagBg: string;
+  checkboxColor: string;
+}
+// 颜色配置函数 - 根据模式返回对应颜色
+function getShelfColors(mode: number): ShelfColors {
+  const isDark = mode === 0; // ColorMode.Dark = 1
+  return {
+    // 背景色
+    pageBg: isDark ? '#0D0D0D' : '#F1F3F5',
+    cardBg: isDark ? '#1E1E1E' : '#FFFFFF',
+    headerBg: isDark ? '#141414' : '#FFFFFF',
+    batchBarBg: isDark ? '#141414' : '#F1F3F5',
+
+    // 文字色
+    primaryText: isDark ? '#E6E6E6' : '#000000',
+    secondaryText: isDark ? '#999999' : '#666666',
+    tertiaryText: isDark ? '#666666' : '#999999',
+    accentText: '#007DFF',
+
+    // 按钮背景
+    primaryBtnBg: '#007DFF',
+    secondaryBtnBg: isDark ? '#2A2A2A' : '#E6F2FF',
+    dangerBtnBg: isDark ? '#2A1F1F' : '#FFF5F5',
+
+    // 文字颜色
+    primaryBtnText: '#FFFFFF',
+    secondaryBtnText: '#007DFF',
+    dangerBtnText: '#FF4D4F',
+
+    // 其他
+    shadow: isDark ? '#000000' : '#10000000',
+    chapterTagBg: isDark ? '#2A2A2A' : '#F5F5F5',
+    checkboxColor: '#007DFF'
+  };
 }
 
 @Component
@@ -31,15 +84,41 @@ export struct ShelfPage {
   @State isRefreshing: boolean = false;
   @State isEditMode: boolean = false;
   @State selectedBooks: Set<string> = new Set();
+  @State colorMode: number = 0; // 0 = Light, 1 = Dark
   private crawler: CrawlerService | null = null;
   private readonly THREADS_DIR = 'threads';
-
+  private configChangeCallback: () => void = () => {};
+  private configCallbackId: number = -1;
   aboutToAppear(): void {
-    this.crawler = new CrawlerService(getContext(this) as Context);
+    this.crawler = new CrawlerService(getContext(this) as common.UIAbilityContext);
+    // 初始化颜色模式
+    const ctx = getContext(this) as common.UIAbilityContext;
+    this.colorMode = ctx.config.colorMode ?? 0;
+    // 监听系统颜色模式变化 - 使用ApplicationContext的配置监听
+    this.configChangeCallback = () => {
+      this.colorMode = ctx.config.colorMode ?? 0;
+    };
+    // 使用正确的EnvironmentCallback类型
+    this.configCallbackId = ctx.getApplicationContext().on('environment', {
+      onConfigurationUpdated: this.configChangeCallback,
+      onMemoryLevel: (level: number) => {
+        // 内存级别变化的处理
+      }
+    });
+
     this.scanLocalFiles();
   }
-
-  private ensureThreadsDir(ctx: Context): string {
+  aboutToDisappear(): void {
+    const ctx = getContext(this) as common.UIAbilityContext;
+    if (this.configCallbackId !== -1) {
+      ctx.getApplicationContext().off('environment', this.configCallbackId);
+    }
+  }
+  // 获取当前颜色配置 - 使用函数而非getter，确保总是返回有效对象
+  private getColors(): ShelfColors {
+    return getShelfColors(this.colorMode);
+  }
+  private ensureThreadsDir(ctx: common.UIAbilityContext): string {
     const threadsPath = `${ctx.filesDir}/${this.THREADS_DIR}`;
     if (!fs.accessSync(threadsPath)) {
       try {
@@ -54,7 +133,7 @@ export struct ShelfPage {
   scanLocalFiles(): void {
     this.isRefreshing = true;
     try {
-      const ctx: Context = getContext(this) as Context;
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
       const threadsPath = this.ensureThreadsDir(ctx);
 
       let files: string[] = [];
@@ -71,7 +150,6 @@ export struct ShelfPage {
         const file: string = files[i];
         if (!file.endsWith('.txt')) continue;
 
-        // 关键修复：支持 {id}.txt 和 {id}_{title}.txt 两种格式
         let tid: string = '';
         let title: string = '';
 
@@ -99,7 +177,7 @@ export struct ShelfPage {
             const metaContent = fs.readTextSync(metaPath);
             const meta: ThreadMeta = JSON.parse(metaContent) as ThreadMeta;
             author = meta.author || "未知作者";
-            title = meta.title || title; // 优先使用meta中的title
+            title = meta.title || title;
             updateTime = new Date(meta.lastUpdate).getTime() || 0;
             chapterCount = Object.keys(meta.posts || {} as Record<string, PostTimeInfo>).length;
           } catch (e) {
@@ -145,21 +223,18 @@ export struct ShelfPage {
       return 0;
     }
   }
-
   private getFullPath(fileName: string): string {
-    const ctx = getContext(this) as Context;
+    const ctx = getContext(this) as common.UIAbilityContext;
     return `${ctx.filesDir}/${this.THREADS_DIR}/${fileName}`;
   }
-
   private getMetaPath(threadId: string): string {
-    const ctx = getContext(this) as Context;
+    const ctx = getContext(this) as common.UIAbilityContext;
     return `${ctx.filesDir}/${this.THREADS_DIR}/${threadId}_meta.json`;
   }
-
   async updateBook(book: LocalBook): Promise<void> {
     this.isRefreshing = true;
     try {
-      const ctx: Context = getContext(this) as Context;
+      const ctx = getContext(this) as common.UIAbilityContext;
       const metaPath = this.getMetaPath(book.threadId);
       let existingIds: string[] = [];
       let author: string = book.author;
@@ -343,35 +418,59 @@ export struct ShelfPage {
   HeaderBar() {
     Row() {
       Text(this.isEditMode ? `已选${this.selectedBooks.size}项` : '我的书架')
-        .fontSize(20).fontWeight(FontWeight.Bold).layoutWeight(1)
+        .fontSize(20)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.getColors().primaryText)
+        .layoutWeight(1)
 
       if (this.isEditMode) {
         Row({ space: 12 }) {
-          Button('全选').fontSize(14).fontColor('#007DFF').backgroundColor(Color.Transparent)
+          Button('全选')
+            .fontSize(14)
+            .fontColor(this.getColors().accentText)
+            .backgroundColor(Color.Transparent)
             .onClick(() => this.selectAll())
-          Button('取消').fontSize(14).fontColor('#666').backgroundColor(Color.Transparent)
+          Button('取消')
+            .fontSize(14)
+            .fontColor(this.getColors().secondaryText)
+            .backgroundColor(Color.Transparent)
             .onClick(() => this.toggleEditMode())
         }
       } else {
         Row({ space: 8 }) {
-          Button('管理').fontSize(14).fontColor('#007DFF').backgroundColor(Color.Transparent)
+          Button('管理')
+            .fontSize(14)
+            .fontColor(this.getColors().accentText)
+            .backgroundColor(Color.Transparent)
             .onClick(() => this.toggleEditMode())
-          Button('刷新').fontSize(14).fontColor('#007DFF').backgroundColor(Color.Transparent)
+          Button('刷新')
+            .fontSize(14)
+            .fontColor(this.getColors().accentText)
+            .backgroundColor(Color.Transparent)
             .onClick(() => this.scanLocalFiles())
         }
       }
     }
-    .width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 }).backgroundColor('#FFF')
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    .backgroundColor(this.getColors().headerBg)
   }
 
   @Builder
   EmptyView() {
     Column() {
       Text('📚').fontSize(64).margin({ bottom: 16 })
-      Text('书架空空如也').fontSize(16).fontColor('#999').margin({ bottom: 8 })
-      Text('去"发现"页面找书吧').fontSize(14).fontColor('#666')
+      Text('书架空空如也')
+        .fontSize(16)
+        .fontColor(this.getColors().tertiaryText)
+        .margin({ bottom: 8 })
+      Text('去"发现"页面找书吧')
+        .fontSize(14)
+        .fontColor(this.getColors().secondaryText)
     }
-    .width('100%').height('60%').justifyContent(FlexAlign.Center)
+    .width('100%')
+    .height('60%')
+    .justifyContent(FlexAlign.Center)
   }
 
   @Builder
@@ -380,27 +479,43 @@ export struct ShelfPage {
       if (this.isEditMode) {
         Checkbox()
           .select(this.selectedBooks.has(book.threadId))
-          .selectedColor('#007DFF')
-          .width(20).height(20).margin({ right: 12 })
+          .selectedColor(this.getColors().checkboxColor)
+          .width(20)
+          .height(20)
+          .margin({ right: 12 })
           .onChange(() => this.toggleSelect(book))
       }
 
       Column() {
         Row() {
-          Text(book.title).fontSize(17).fontWeight(FontWeight.Bold)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+          Text(book.title)
+            .fontSize(17)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.getColors().primaryText)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
           if (!this.isEditMode && book.chapterCount > 0) {
-            Text(`${book.chapterCount}章`).fontSize(11).fontColor('#999')
+            Text(`${book.chapterCount}章`)
+              .fontSize(11)
+              .fontColor(this.getColors().tertiaryText)
               .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-              .backgroundColor('#F5F5F5').borderRadius(4)
+              .backgroundColor(this.getColors().chapterTagBg)
+              .borderRadius(4)
           }
         }.width('100%')
 
         Row() {
-          Text(book.author).fontSize(14).fontColor('#666')
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+          Text(book.author)
+            .fontSize(14)
+            .fontColor(this.getColors().secondaryText)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
           if (book.updateTime > 0) {
-            Text(this.formatTime(book.updateTime)).fontSize(12).fontColor('#999')
+            Text(this.formatTime(book.updateTime))
+              .fontSize(12)
+              .fontColor(this.getColors().tertiaryText)
           }
         }.width('100%').margin({ top: 6 })
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -408,15 +523,28 @@ export struct ShelfPage {
       if (!this.isEditMode) {
         Row({ space: 8 }) {
           Button() { Text('🗑️').fontSize(16) }
-          .width(36).height(36).backgroundColor('#FFF5F5').borderRadius(18)
+          .width(36)
+          .height(36)
+          .backgroundColor(this.getColors().dangerBtnBg)
+          .borderRadius(18)
           .onClick(() => this.showDeleteConfirm(book))
 
-          Button('更新').fontSize(12).height(32).padding({ left: 12, right: 12 })
-            .backgroundColor('#E6F2FF').fontColor('#007DFF').borderRadius(16)
+          Button('更新')
+            .fontSize(12)
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .backgroundColor(this.getColors().secondaryBtnBg)
+            .fontColor(this.getColors().secondaryBtnText)
+            .borderRadius(16)
             .onClick(() => this.updateBook(book))
 
-          Button('阅读').fontSize(12).height(32).padding({ left: 12, right: 12 })
-            .backgroundColor('#007DFF').fontColor('#FFF').borderRadius(16)
+          Button('阅读')
+            .fontSize(12)
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .backgroundColor(this.getColors().primaryBtnBg)
+            .fontColor(this.getColors().primaryBtnText)
+            .borderRadius(16)
             .onClick(() => {
               router.pushUrl({
                 url: 'pages/ReaderPage',
@@ -426,8 +554,11 @@ export struct ShelfPage {
         }
       }
     }
-    .width('100%').padding(16).backgroundColor('#FFF').borderRadius(12)
-    .shadow({ radius: 4, color: '#10000000' })
+    .width('100%')
+    .padding(16)
+    .backgroundColor(this.getColors().cardBg)
+    .borderRadius(12)
+    .shadow({ radius: 4, color: this.getColors().shadow })
     .onClick(() => { if (this.isEditMode) this.toggleSelect(book); })
   }
 
@@ -438,13 +569,20 @@ export struct ShelfPage {
         Button() {
           Row({ space: 4 }) {
             Text('🗑️').fontSize(16)
-            Text(`删除(${this.selectedBooks.size})`).fontSize(14).fontColor('#FF4D4F')
+            Text(`删除(${this.selectedBooks.size})`)
+              .fontSize(14)
+              .fontColor(this.getColors().dangerBtnText)
           }
         }
-        .width('100%').height(48).backgroundColor('#FFF5F5').borderRadius(8)
+        .width('100%')
+        .height(48)
+        .backgroundColor(this.getColors().dangerBtnBg)
+        .borderRadius(8)
         .onClick(() => this.batchDelete())
       }
-      .width('100%').padding({ left: 16, right: 16, bottom: 16 }).backgroundColor('#F1F3F5')
+      .width('100%')
+      .padding({ left: 16, right: 16, bottom: 16 })
+      .backgroundColor(this.getColors().batchBarBg)
     }
   }
 
@@ -452,7 +590,11 @@ export struct ShelfPage {
     Column() {
       this.HeaderBar()
       if (this.isRefreshing) {
-        LoadingProgress().width(40).height(40).margin(20)
+        LoadingProgress()
+          .width(40)
+          .height(40)
+          .color(this.getColors().accentText)
+          .margin(20)
       }
       if (this.localBooks.length === 0 && !this.isRefreshing) {
         this.EmptyView()
@@ -462,12 +604,17 @@ export struct ShelfPage {
             ListItem() { this.BookItem(book) }
           }, (item: LocalBook): string => item.threadId)
         }
-        .width('100%').layoutWeight(1).padding({ left: 16, right: 16 })
+        .width('100%')
+        .layoutWeight(1)
+        .padding({ left: 16, right: 16 })
         .alignListItem(ListItemAlign.Center)
-        .edgeEffect(EdgeEffect.Spring).scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.Spring)
+        .scrollBar(BarState.Auto)
       }
       this.BatchDeleteBar()
     }
-    .width('100%').height('100%').backgroundColor('#F1F3F5')
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.getColors().pageBg)
   }
 }
