@@ -1,10 +1,14 @@
-// entry/src/main/ets/pages/ReaderPage.ets (修复版)
-
+// entry/src/main/ets/pages/ReaderPage.ets
 import router from '@ohos.router';
 import fs from '@ohos.file.fs';
 import util from '@ohos.util';
 import preferences from '@ohos.data.preferences';
-import display from '@ohos.display';
+import window from '@ohos.window';
+import common from '@ohos.app.ability.common';
+import { ReaderContent } from '../components/reader/ReaderContent';
+import { ReaderController, ControllerState } from '../components/reader/ReaderController';
+import { Theme, LayoutConfig } from '../components/reader/ReaderStyles';
+import emitter from '@ohos.events.emitter';
 
 interface ReaderParams {
   fileName: string;
@@ -12,78 +16,96 @@ interface ReaderParams {
   threadId?: string;
 }
 
-interface Chapter {
+export interface Chapter {
   title: string;
-  index: number;
+  startPage: number;
+  endPage: number;
   level: number;
-  contentLength?: number;
+  pageCount: number;
 }
 
-interface Bookmark {
+export interface Bookmark {
   id: string;
   chapterIndex: number;
-  charIndex: number;
+  pageIndex: number;
+  globalPage: number;
   excerpt: string;
   timestamp: number;
 }
 
-// ✅ 修复：Progress 结构优化，移除不可靠的 scrollIndex
-interface Progress {
+export interface Progress {
   chapterIndex: number;
-  chapterOffset: number;  // 章节内字符偏移（0-1 之间的比例）
+  pageIndex: number;
+  globalPage: number;
   timestamp: number;
 }
 
+export interface JumpToPageData {
+  globalPage: number;
+  chapterIndex: number;
+  pageIndex: number;
+}
+
+interface ReaderEvents {
+  JUMP_TO_PAGE: string;
+  JUMP_TO_GLOBAL_PAGE: string;
+  GET_CURRENT_PAGE: string;
+  PAGE_RESULT: string;
+  UPDATE_PAGINATION: string;
+}
+
+export const READER_EVENTS: ReaderEvents = {
+  JUMP_TO_PAGE: 'jump_to_page',
+  JUMP_TO_GLOBAL_PAGE: 'jump_to_global_page',
+  GET_CURRENT_PAGE: 'get_current_page',
+  PAGE_RESULT: 'page_result',
+  UPDATE_PAGINATION: 'update_pagination'
+};
+
 const CHAPTER_REGEX = /(?:第[一二三四五六七八九十百千零\d]+章|章节\s*\d+|Chapter\s*\d+|^\d+\.)\s*[^\n]*/gmi;
 const PREF_KEY_PREFIX = 'reader_';
+// 内存优化的 PageData 接口
+export interface PageData {
+  chapterIndex: number;
+  pageIndexInChapter: number;
+  globalPageIndex: number;
+  lines: string[];
+  // 不再存储 text，由组件计算
+}
 
 @Entry
 @Component
 struct ReaderPage {
-  // 基础状态
   @State content: string = "";
   @State title: string = "";
   @State isLoading: boolean = true;
   @State errorMsg: string = "";
   @State fileName: string = "";
-
-  // 目录相关
   @State chapters: Chapter[] = [];
-  @State showCatalog: boolean = false;
   @State currentChapterIndex: number = 0;
-
-  // 书签相关
+  @State currentPageIndex: number = 0;
+  @State totalPages: number = 0;
   @State bookmarks: Bookmark[] = [];
-  @State showBookmarks: boolean = false;
-  @State showAddBookmark: boolean = false;
+  @State controllerState: ControllerState = ControllerState.HIDDEN;
+  @State screenWidth: number = 360;
+  @State screenHeight: number = 780;
 
-  // List 控制器
-  private listController: ListScroller = new ListScroller();
+  // 使用 @State 让 ReaderContent 能监听变化
+  @State pages: PageData[] = [];
 
-  // 进度管理
   private prefManager: preferences.Preferences | null = null;
-
-  // ✅ 修复：使用 Map 存储每个章节的真实高度（用于精确跳转）
-  private chapterHeights: Map<number, number> = new Map();
-
-  // ✅ 修复：记录 List 当前真实可见的索引范围
-  private visibleStartIndex: number = 0;
-  private visibleEndIndex: number = 0;
-
-  // 常量
-  private readonly CONTENT_START_INDEX = 0;  // 简化：顶部不需要占位，TopBar 在 List 外
-
-  // ✅ 修复：正确的定时器类型
   private saveTimer: number | null = null;
-  private isRestoring: boolean = false;  // 标记是否正在恢复位置，避免保存冲突
+  private isRestoring: boolean = false;
 
   aboutToAppear() {
     const params = router.getParams() as ReaderParams;
-    if (params && params.fileName) {
+    if (params?.fileName) {
       this.fileName = params.fileName;
       this.title = params.title || '未命名';
-      this.initPreferences();
-      this.readBookContent(params.fileName);
+      this.updateScreenSize();
+      this.initPreferences().then(() => {
+        this.readBookContent(params.fileName);
+      });
     } else {
       this.errorMsg = "参数错误：未指定文件名";
       this.isLoading = false;
@@ -91,14 +113,23 @@ struct ReaderPage {
   }
 
   aboutToDisappear() {
-    // ✅ 修复：页面销毁时立即保存一次进度
-    if (!this.isRestoring) {
-      this.saveProgressImmediate();
-    }
-    // 清理定时器
-    if (this.saveTimer !== null) {
-      clearTimeout(this.saveTimer);
-      this.saveTimer = null;
+    this.saveProgressImmediate();
+    if (this.saveTimer !== null) clearTimeout(this.saveTimer);
+  }
+
+  async updateScreenSize() {
+    try {
+      let windowClass = await window.getLastWindow(getContext(this) as common.UIAbilityContext);
+      let windowInfo = windowClass.getWindowProperties();
+      if (windowInfo?.windowRect) {
+        this.screenWidth = px2vp(windowInfo.windowRect.width);
+        this.screenHeight = px2vp(windowInfo.windowRect.height);
+      }
+    } catch (e) {
+      console.error('Get window size failed:', e);
+      // 使用默认值
+      this.screenWidth = 360;
+      this.screenHeight = 780;
     }
   }
 
@@ -107,7 +138,7 @@ struct ReaderPage {
       this.prefManager = await preferences.getPreferences(getContext(this), 'reader_prefs');
       await this.loadBookmarks();
     } catch (e) {
-      console.error('[ReaderPage] Init prefs failed:', e);
+      console.error('Init prefs failed:', e);
     }
   }
 
@@ -117,6 +148,7 @@ struct ReaderPage {
       let context = getContext(this);
       let filePath = `${context.filesDir}/threads/${fileName}`;
 
+      // 检查文件存在性
       if (!fs.accessSync(filePath)) {
         const oldPath = `${context.filesDir}/${fileName}`;
         if (fs.accessSync(oldPath)) {
@@ -126,263 +158,338 @@ struct ReaderPage {
         }
       }
 
+      // 获取文件信息
+      const stat = fs.statSync(filePath);
+      const fileSize = stat.size;
+
+      // 大文件警告（超过 10MB）
+      if (fileSize > 10 * 1024 * 1024) {
+        console.warn(`大文件警告: ${fileSize / 1024 / 1024}MB，加载可能需要时间`);
+      }
+
       file = fs.openSync(filePath, fs.OpenMode.READ_ONLY);
-      let stat = fs.statSync(file.fd);
-      if (stat.size === 0) throw new Error("文件为空");
 
-      let buf = new ArrayBuffer(stat.size);
-      fs.readSync(file.fd, buf);
+      // 分块读取大文件，避免一次性分配超大 ArrayBuffer
+      const MAX_CHUNK = 5 * 1024 * 1024; // 5MB 分块
+      let content = '';
 
-      let textDecoder = util.TextDecoder.create('utf-8');
-      let uint8Array = new Uint8Array(buf);
-      this.content = textDecoder.decodeWithStream(uint8Array);
+      if (fileSize <= MAX_CHUNK) {
+        // 小文件直接读
+        let buf = new ArrayBuffer(fileSize);
+        fs.readSync(file.fd, buf);
+        let textDecoder = util.TextDecoder.create('utf-8');
+        content = textDecoder.decodeWithStream(new Uint8Array(buf));
+      } else {
+        // 大文件分块读（简化版，实际可能需要更复杂的拼接逻辑处理编码边界）
+        let textDecoder = util.TextDecoder.create('utf-8');
+        let offset = 0;
+        while (offset < fileSize) {
+          const chunkSize = Math.min(MAX_CHUNK, fileSize - offset);
+          let buf = new ArrayBuffer(chunkSize);
+          fs.readSync(file.fd, buf, { offset: offset, length: chunkSize });
+          content += textDecoder.decodeWithStream(new Uint8Array(buf));
+          offset += chunkSize;
+        }
+      }
 
+      this.content = content;
+
+      // 解析章节
       this.parseChapters();
+
+      // 执行分页（优化版）
+      this.performPagination();
+
       this.isLoading = false;
 
-      // ✅ 修复：确保章节解析完成后再恢复位置
-      setTimeout(() => {
-        this.restorePosition();
-      }, 100);
+      // 延迟恢复位置，确保 ReaderContent 已渲染
+      setTimeout(() => this.restorePosition(), 200);
 
     } catch (e) {
-      console.error(`[ReaderPage] Read failed:`, e);
-      this.errorMsg = "读取失败: " + (e.message || JSON.stringify(e));
+      this.errorMsg = "读取失败: " + (e as Error).message;
       this.isLoading = false;
+      console.error('Read book failed:', e);
     } finally {
-      if (file) {
-        try { fs.closeSync(file); } catch (e) {}
-      }
+      if (file) fs.closeSync(file);
     }
   }
 
-  parseChapters() {
-    const matches = Array.from(this.content.matchAll(CHAPTER_REGEX));
-    this.chapters = matches.map((match, idx) => ({
-      title: match[0].trim().substring(0, 50),
-      index: match.index || 0,
-      level: this.detectLevel(match[0]),
-      contentLength: 0
-    } as Chapter));
-
-    for (let i = 0; i < this.chapters.length; i++) {
-      const start = this.chapters[i].index;
-      const end = i + 1 < this.chapters.length ? this.chapters[i + 1].index : this.content.length;
-      this.chapters[i].contentLength = end - start;
+  // 优化版分页：限制最大页数，使用内存友好的数据结构
+  performPagination() {
+    if (!this.content || this.chapters.length === 0) {
+      this.pages = [];
+      this.totalPages = 0;
+      return;
     }
 
-    if (this.chapters.length === 0) {
-      const segmentLength = 5000;
-      const count = Math.ceil(this.content.length / segmentLength);
-      for (let i = 0; i < count; i++) {
-        const start = i * segmentLength;
-        const end = Math.min(start + segmentLength, this.content.length);
-        this.chapters.push({
-          title: `第${i + 1}部分`,
-          index: start,
-          level: 0,
-          contentLength: end - start
+    const newPages: PageData[] = [];
+    let globalPageIndex = 0;
+
+    const contentWidth = Math.max(100, this.screenWidth - Theme.PAGE_PADDING * 2);
+    const charsPerLine = Math.floor(contentWidth / LayoutConfig.CHAR_WIDTH);
+    const availableHeight = Math.max(200, this.screenHeight - LayoutConfig.TOP_MARGIN - LayoutConfig.BOTTOM_MARGIN);
+    const linesPerPage = Math.floor(availableHeight / Theme.LINE_HEIGHT);
+
+    // 限制最大页数，防止内存爆炸（约 5000 页，约 2-3MB 文本）
+    const MAX_PAGES = 5000;
+
+    for (let chapterIdx = 0; chapterIdx < this.chapters.length; chapterIdx++) {
+      const chapter = this.chapters[chapterIdx];
+      const startIdx = chapter.startPage; // 此时还是字符索引
+      const endIdx = chapter.endPage;
+      const chapterContent = this.content.substring(startIdx, endIdx);
+
+      // 文本断行
+      const lines = this.breakTextIntoLines(chapterContent, charsPerLine);
+
+      chapter.startPage = globalPageIndex; // 改为页码索引
+
+      let pageLines: string[] = [];
+      for (let line of lines) {
+        pageLines.push(line);
+
+        if (pageLines.length >= linesPerPage) {
+          // 只存储 lines，不存储 text
+          newPages.push({
+            chapterIndex: chapterIdx,
+            pageIndexInChapter: chapter.pageCount,
+            globalPageIndex: globalPageIndex,
+            lines: pageLines.slice() // 复制数组
+          });
+
+          pageLines = [];
+          chapter.pageCount++;
+          globalPageIndex++;
+
+          // 检查最大页数限制
+          if (globalPageIndex >= MAX_PAGES) {
+            console.warn(`达到最大页数限制 ${MAX_PAGES}，后续内容将被截断`);
+            break;
+          }
+        }
+      }
+
+      // 处理剩余行
+      if (pageLines.length > 0 && globalPageIndex < MAX_PAGES) {
+        newPages.push({
+          chapterIndex: chapterIdx,
+          pageIndexInChapter: chapter.pageCount,
+          globalPageIndex: globalPageIndex,
+          lines: pageLines
         });
+        chapter.pageCount++;
+        globalPageIndex++;
+      }
+
+      chapter.endPage = globalPageIndex;
+
+      // 提前退出检查
+      if (globalPageIndex >= MAX_PAGES) break;
+    }
+
+    // 更新状态（触发 ReaderContent 重新渲染）
+    this.pages = newPages;
+    this.totalPages = globalPageIndex;
+
+    console.info(`分页完成：共 ${this.totalPages} 页，${this.chapters.length} 章，内存页数 ${newPages.length}`);
+  }
+
+  breakTextIntoLines(text: string, charsPerLine: number): string[] {
+    const lines: string[] = [];
+    let currentLine = '';
+    let currentWidth = 0;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      const charWidth = this.getCharWidth(char);
+
+      if (char === '\n') {
+        if (currentLine) lines.push(currentLine);
+        currentLine = '';
+        currentWidth = 0;
+      } else if (currentWidth + charWidth > charsPerLine) {
+        // 行尾标点处理
+        if (this.isPunctuation(char) && currentLine.length > 0) {
+          currentLine += char;
+          lines.push(currentLine);
+          currentLine = '';
+          currentWidth = 0;
+        } else {
+          if (currentLine) lines.push(currentLine);
+          currentLine = char;
+          currentWidth = charWidth;
+        }
+      } else {
+        currentLine += char;
+        currentWidth += charWidth;
       }
     }
-    console.log(`[ReaderPage] Parsed ${this.chapters.length} chapters`);
+
+    if (currentLine) {
+      lines.push(currentLine);
+    }
+
+    return lines;
+  }
+
+  getCharWidth(char: string): number {
+    // 中文字符和全角字符占2，英文占1
+    const code = char.charCodeAt(0);
+    return (code > 127 || (code >= 0xFF01 && code <= 0xFF5E)) ? 2 : 1;
+  }
+
+  isPunctuation(char: string): boolean {
+    return '，。！？；：""\'\'（）【】、'.includes(char);
+  }
+
+  parseChapters(): void {
+    // 重置章节数组
+    this.chapters = [];
+
+    const matches = Array.from(this.content.matchAll(CHAPTER_REGEX));
+
+    if (matches.length === 0) {
+      // 无章节，整本书作为一章
+      this.chapters = [{
+        title: "正文",
+        startPage: 0,
+        endPage: this.content.length,
+        level: 0,
+        pageCount: 0
+      }];
+    } else {
+      this.chapters = matches.map((match, idx): Chapter => ({
+        title: match[0].trim().substring(0, 50),
+        startPage: match.index || 0,
+        endPage: idx + 1 < matches.length ? (matches[idx + 1].index ?? this.content.length) : this.content.length,
+        level: this.detectLevel(match[0]),
+        pageCount: 0
+      }));
+    }
   }
 
   detectLevel(title: string): number {
     if (title.match(/^第[一二三四五六七八九十百千零]+章/)) return 0;
-    if (title.match(/^章节\s*\d+/i)) return 0;
-    if (title.match(/^Chapter\s*\d+/i)) return 0;
-    if (title.match(/^\d+\./)) return 1;
+    if (title.match(/^[第章节]\d+/)) return 1;
     return 2;
   }
 
-  // ==================== 核心修复：精确的跳转方法 ====================
+  jumpToChapter(chapterIndex: number, pageIndex: number = 0): void {
+    if (chapterIndex < 0 || chapterIndex >= this.chapters.length) return;
 
-  /**
-   * ✅ 修复：跳转到指定章节和精确位置
-   */
-  jumpToChapter(chapterIndex: number, chapterOffsetRatio: number = 0) {
-    if (chapterIndex < 0 || chapterIndex >= this.chapters.length) {
-      console.warn(`[ReaderPage] Invalid chapter index: ${chapterIndex}`);
-      return;
-    }
-
-    console.log(`[ReaderPage] Jump to chapter ${chapterIndex}, offset ${chapterOffsetRatio}`);
-
-    this.isRestoring = true;  // 标记正在恢复，避免保存冲突
-    this.currentChapterIndex = chapterIndex;
-
-    // 直接跳转到目标章节的 ListItem
-    this.listController.scrollToIndex(chapterIndex, true, ScrollAlign.START);
-
-    // 如果有章节内偏移，进行微调
-    if (chapterOffsetRatio > 0) {
-      setTimeout(() => {
-        this.adjustChapterOffset(chapterIndex, chapterOffsetRatio);
-        this.isRestoring = false;  // 恢复完成
-      }, 350);  // 给 List 滚动动画留出时间
-    } else {
-      setTimeout(() => {
-        this.isRestoring = false;
-      }, 350);
-    }
-
-    this.showCatalog = false;
-  }
-
-  /**
-   * ✅ 修复：章节内偏移调整 - 基于比例而非绝对像素
-   */
-  private adjustChapterOffset(chapterIndex: number, offsetRatio: number) {
     const chapter = this.chapters[chapterIndex];
-    if (!chapter.contentLength || chapter.contentLength === 0) return;
+    const safePageIndex = Math.max(0, Math.min(pageIndex, chapter.pageCount - 1));
+    const globalPage = chapter.startPage + safePageIndex;
 
-    // 计算需要滚动的像素距离
-    // 先尝试获取已缓存的章节高度
-    let chapterHeight = this.chapterHeights.get(chapterIndex);
-
-    if (!chapterHeight) {
-      // 如果没有缓存，使用估算高度
-      chapterHeight = this.estimateChapterHeight(chapter);
-    }
-
-    const scrollDelta = offsetRatio * chapterHeight;
-
-    if (scrollDelta > 0) {
-      console.log(`[ReaderPage] Adjust offset by ${scrollDelta}px (ratio: ${offsetRatio})`);
-      this.listController.scrollBy(0, scrollDelta);
-    }
+    this.jumpToGlobalPage(globalPage);
   }
 
-  private estimateChapterHeight(chapter: Chapter): number {
-    if (!chapter.contentLength) return 500;
+  jumpToGlobalPage(globalPage: number): void {
+    if (this.totalPages === 0) return;
 
-    const displayInfo = display.getDefaultDisplaySync();
-    const screenWidth = displayInfo.width / displayInfo.densityPixels;
-    const availableWidth = screenWidth - 40;
-    const charsPerLine = Math.floor(availableWidth / 18 * 0.95);
+    const safePage = Math.max(0, Math.min(globalPage, this.totalPages - 1));
 
-    const lineHeight = 32;
-    const lines = Math.ceil(chapter.contentLength / charsPerLine);
+    this.isRestoring = true;
 
-    return lines * lineHeight + 60;
+    const pageData = this.pages[safePage];
+    if (pageData) {
+      this.currentChapterIndex = pageData.chapterIndex;
+      this.currentPageIndex = pageData.pageIndexInChapter;
+    }
+
+    // 发送事件到 ReaderContent
+    emitter.emit(READER_EVENTS.JUMP_TO_PAGE, {
+      data: {
+        globalPage: safePage,
+        chapterIndex: pageData?.chapterIndex ?? 0,
+        pageIndex: pageData?.pageIndexInChapter ?? 0
+      }
+    });
+
+    this.saveProgressDelayed();
+
+    setTimeout(() => {
+      this.isRestoring = false;
+    }, 500);
+
+    this.controllerState = ControllerState.HIDDEN;
   }
 
-  // ==================== 核心修复：精确的进度保存 ====================
+  onPageChanged(chapterIndex: number, pageIndex: number, globalPage: number) {
+    if (this.isRestoring) return;
 
-  /**
-   * ✅ 修复：基于真实可见索引计算进度
-   */
+    this.currentChapterIndex = chapterIndex;
+    this.currentPageIndex = pageIndex;
+    this.saveProgressDelayed();
+  }
+
   private calculateCurrentProgress(): Progress {
-    // 使用 onScrollIndex 记录的真实可见索引
-    const chapterIdx = Math.min(this.visibleStartIndex, this.chapters.length - 1);
-    const chapter = this.chapters[chapterIdx];
-
-    if (!chapter) {
-      return { chapterIndex: 0, chapterOffset: 0, timestamp: Date.now() };
-    }
-
-    // 计算章节内偏移比例（0-1）
-    let offsetRatio = 0;
-
-    // 获取章节在屏幕上的位置信息来估算偏移
-    // 由于 HarmonyOS 没有直接提供，我们通过可见索引和滚动位置估算
-    if (this.visibleStartIndex === chapterIdx && this.visibleEndIndex > chapterIdx) {
-      // 当前章节占据屏幕主要部分，估算为开始位置
-      offsetRatio = 0;
-    } else {
-      // 章节已经在屏幕上方，估算偏移
-      // 这里简化处理，如果需要更精确，需要监听每个章节的 onAreaChange
-      offsetRatio = 0;
-    }
+    const chapter = this.chapters[this.currentChapterIndex];
+    const currentGlobalPage = chapter ? chapter.startPage + this.currentPageIndex : 0;
 
     return {
-      chapterIndex: chapterIdx,
-      chapterOffset: offsetRatio,
+      chapterIndex: this.currentChapterIndex,
+      pageIndex: this.currentPageIndex,
+      globalPage: currentGlobalPage,
       timestamp: Date.now()
     };
   }
 
-  /**
-   * ✅ 修复：立即保存进度（用于页面销毁时）
-   */
-  private async saveProgressImmediate() {
-    if (!this.prefManager || this.chapters.length === 0) return;
+  async saveProgressImmediate(): Promise<void> {
+    if (!this.prefManager || this.fileName === "") return;
 
     const progress = this.calculateCurrentProgress();
-    const key = `${PREF_KEY_PREFIX}progress_${this.fileName}`;
-
     try {
-      await this.prefManager.put(key, JSON.stringify(progress));
+      await this.prefManager.put(`${PREF_KEY_PREFIX}progress_${this.fileName}`, JSON.stringify(progress));
       await this.prefManager.flush();
-      console.log(`[ReaderPage] Progress saved immediately:`, progress);
     } catch (e) {
-      console.error('[ReaderPage] Save progress failed:', e);
+      console.error('Save progress failed:', e);
     }
   }
 
-  /**
-   * ✅ 修复：延迟保存进度（用于滚动时）
-   */
-  private saveProgressDelayed() {
-    if (this.isRestoring) return;  // 恢复过程中不保存
-
-    // 清理之前的定时器
-    if (this.saveTimer !== null) {
-      clearTimeout(this.saveTimer);
-    }
-
-    // 设置新的定时器，1秒后保存
-    this.saveTimer = setTimeout(() => {
-      this.saveProgressImmediate();
-      this.saveTimer = null;
-    }, 1000);
+  saveProgressDelayed(): void {
+    if (this.isRestoring) return;
+    if (this.saveTimer !== null) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => this.saveProgressImmediate(), 1500);
   }
 
-  async loadProgress() {
-    if (!this.prefManager) return;
+  async loadProgress(): Promise<Progress | null> {
+    if (!this.prefManager) return null;
     try {
-      const key = `${PREF_KEY_PREFIX}progress_${this.fileName}`;
-      const data = await this.prefManager.get(key, '');
-      if (data) {
-        const progress: Progress = JSON.parse(data.toString());
-        console.log(`[ReaderPage] Loaded progress:`, progress);
-        return progress;
-      }
+      const data = await this.prefManager.get(`${PREF_KEY_PREFIX}progress_${this.fileName}`, '');
+      return data ? JSON.parse(data.toString()) as Progress : null;
     } catch (e) {
-      console.error('[ReaderPage] Load progress failed:', e);
+      return null;
     }
-    return null;
   }
 
-  async restorePosition() {
-    if (this.chapters.length === 0) return;
+  async restorePosition(): Promise<void> {
+    if (this.totalPages === 0) return;
 
     const progress = await this.loadProgress();
-    if (!progress) {
-      // 没有保存的进度，默认从第一章开始
-      this.currentChapterIndex = 0;
-      return;
+    if (!progress) return;
+
+    // 优先使用全局页码
+    if (progress.globalPage !== undefined && progress.globalPage >= 0 && progress.globalPage < this.totalPages) {
+      this.jumpToGlobalPage(progress.globalPage);
+    } else if (progress.chapterIndex >= 0 && progress.chapterIndex < this.chapters.length) {
+      this.jumpToChapter(progress.chapterIndex, progress.pageIndex || 0);
     }
-
-    // 确保章节索引有效
-    const chapterIdx = Math.min(progress.chapterIndex, this.chapters.length - 1);
-    this.currentChapterIndex = chapterIdx;
-
-    console.log(`[ReaderPage] Restoring to chapter ${chapterIdx}, offset ${progress.chapterOffset}`);
-
-    // 使用保存的偏移比例跳转
-    this.jumpToChapter(chapterIdx, progress.chapterOffset);
   }
-
-  // ==================== 书签管理（保持不变） ====================
 
   async loadBookmarks() {
     if (!this.prefManager) return;
     try {
-      const key = `${PREF_KEY_PREFIX}bookmarks_${this.fileName}`;
-      const data = await this.prefManager.get(key, '[]');
-      this.bookmarks = JSON.parse(data as string);
+      const data = await this.prefManager.get(`${PREF_KEY_PREFIX}bookmarks_${this.fileName}`, '[]');
+      const rawBookmarks = JSON.parse(data.toString()) as Bookmark[];
+      this.bookmarks = rawBookmarks.map((bm: Bookmark): Bookmark => ({
+        id: bm.id || Date.now().toString(),
+        chapterIndex: bm.chapterIndex ?? 0,
+        pageIndex: bm.pageIndex ?? 0,
+        globalPage: bm.globalPage ?? 0,
+        excerpt: bm.excerpt || '书签',
+        timestamp: bm.timestamp || Date.now()
+      })).filter((bm: Bookmark) => bm.globalPage < this.totalPages || this.totalPages === 0);
     } catch (e) {
       this.bookmarks = [];
     }
@@ -390,485 +497,126 @@ struct ReaderPage {
 
   async saveBookmarks() {
     if (!this.prefManager) return;
-    const key = `${PREF_KEY_PREFIX}bookmarks_${this.fileName}`;
-    await this.prefManager.put(key, JSON.stringify(this.bookmarks));
-    await this.prefManager.flush();
+    try {
+      await this.prefManager.put(`${PREF_KEY_PREFIX}bookmarks_${this.fileName}`, JSON.stringify(this.bookmarks));
+      await this.prefManager.flush();
+    } catch (e) {}
   }
 
-  addBookmark() {
-    const chapterIdx = this.currentChapterIndex;
-    const chapter = this.chapters[chapterIdx];
+  addBookmark(): void {
+    const chapter = this.chapters[this.currentChapterIndex];
+    if (!chapter) return;
 
-    // ✅ 修复：书签使用章节内偏移比例，更精确
-    const charIndex = chapter.index + Math.floor((chapter.contentLength || 0) * 0.1); // 默认记录10%位置
-    const excerpt = this.content.substring(charIndex, charIndex + 40) + '...';
+    const globalPage = chapter.startPage + this.currentPageIndex;
+    const pageData = this.pages[globalPage];
+
+    // 生成摘录
+    let excerpt = '书签';
+    if (pageData && pageData.lines.length > 0) {
+      excerpt = pageData.lines.slice(0, 2).join('').substring(0, 40) + '...';
+    }
 
     const bookmark: Bookmark = {
       id: Date.now().toString(),
-      chapterIndex: chapterIdx,
-      charIndex: charIndex,
+      chapterIndex: this.currentChapterIndex,
+      pageIndex: this.currentPageIndex,
+      globalPage: globalPage,
       excerpt: excerpt,
       timestamp: Date.now()
     };
 
-    this.bookmarks.unshift(bookmark);
-    this.saveBookmarks();
-    this.showAddBookmark = false;
+    // 检查重复
+    const exists = this.bookmarks.some(b =>
+    b.chapterIndex === bookmark.chapterIndex && b.pageIndex === bookmark.pageIndex
+    );
+
+    if (!exists) {
+      this.bookmarks.unshift(bookmark);
+      this.saveBookmarks();
+    }
+
+    this.controllerState = ControllerState.HIDDEN;
   }
 
-  deleteBookmark(id: string) {
+  deleteBookmark(id: string): void {
     this.bookmarks = this.bookmarks.filter(b => b.id !== id);
     this.saveBookmarks();
   }
 
-  jumpToBookmark(bookmark: Bookmark) {
-    const chapter = this.chapters[bookmark.chapterIndex];
-    if (!chapter) return;
-
-    // 计算章节内偏移比例
-    const offsetRatio = Math.min(1, Math.max(0,
-      (bookmark.charIndex - chapter.index) / (chapter.contentLength || 1)
-    ));
-
-    this.jumpToChapter(bookmark.chapterIndex, offsetRatio);
-    this.showBookmarks = false;
+  jumpToBookmark(bm: Bookmark): void {
+    if (bm.globalPage !== undefined && bm.globalPage >= 0 && bm.globalPage < this.totalPages) {
+      this.jumpToGlobalPage(bm.globalPage);
+    } else {
+      this.jumpToChapter(bm.chapterIndex, bm.pageIndex || 0);
+    }
   }
-
-  // ==================== UI 构建（核心修复：List 事件监听） ====================
 
   build() {
-    Stack() {
-      Column() {
-        this.TopBar()
-        if (this.isLoading) {
-          this.LoadingView()
-        } else if (this.errorMsg) {
-          this.ErrorView()
-        } else {
-          this.ContentView()
-        }
-        if (!this.isLoading && !this.errorMsg) {
-          this.BottomBar()
-        }
-      }
-      .width('100%')
-      .height('100%')
-      .backgroundColor('#f4efe7')
-
-      if (this.showCatalog) {
-        this.CatalogPanel()
-      }
-      if (this.showBookmarks) {
-        this.BookmarkPanel()
-      }
-      if (this.showAddBookmark) {
-        this.AddBookmarkDialog()
-      }
-    }
-    .width('100%')
-    .height('100%')
-  }
-
-  @Builder
-  TopBar() {
-    Row() {
-      Text('❮')
-        .fontSize(22)
-        .padding(10)
-        .onClick(() => {
-          this.saveProgressImmediate();  // 返回前保存
-          router.back();
-        })
-
-      Text(this.title)
-        .fontSize(18)
-        .fontWeight(FontWeight.Medium)
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.Center)
-
-      Row() {
-        Button('☰')
-          .fontSize(20)
-          .backgroundColor(Color.Transparent)
-          .fontColor('#333')
-          .onClick(() => {
-            this.showCatalog = true;
-            this.showBookmarks = false;
-          })
-
-        Button('🔖')
-          .fontSize(20)
-          .backgroundColor(Color.Transparent)
-          .fontColor('#333')
-          .margin({ left: 8 })
-          .onClick(() => {
-            this.showBookmarks = true;
-            this.showCatalog = false;
-          })
-      }
-    }
-    .width('100%')
-    .padding({ top: 40, bottom: 12, left: 16, right: 16 })
-    .backgroundColor('#f2f2f2')
-    .zIndex(10)
-  }
-
-  @Builder
-  ContentView() {
-    List({ scroller: this.listController }) {
-      // ✅ 修复：简化结构，每个章节一个 ListItem
-      ForEach(this.chapters, (chapter: Chapter, index: number) => {
-        ListItem() {
-          this.ChapterContentBuilder(chapter, index)
-        }
-        .id(`chapter_${index}`)
-        // ✅ 新增：监听章节项的面积变化，获取真实高度
-        .onAreaChange((oldArea, newArea) => {
-          if (newArea.height > 0) {
-            this.chapterHeights.set(index, Number(newArea.height));
+    Stack({ alignContent: Alignment.TopStart }) {
+      if (this.isLoading) {
+        this.LoadingView()
+      } else if (this.errorMsg) {
+        this.ErrorView()
+      } else {
+        // 阅读内容层 - 传递 pages 给 ReaderContent
+        ReaderContent({
+          pages: this.pages,
+          chapters: this.chapters,
+          totalPages: this.totalPages,
+          screenWidth: this.screenWidth,
+          screenHeight: this.screenHeight,
+          onPageChange: (chapterIdx: number, pageIdx: number, globalPage: number) => {
+            this.onPageChanged(chapterIdx, pageIdx, globalPage);
+          },
+          onCenterTap: () => {
+            this.controllerState = this.controllerState === ControllerState.HIDDEN
+              ? ControllerState.VISIBLE
+              : ControllerState.HIDDEN;
           }
         })
-      })
 
-      // 底部占位
-      ListItem() {
-        Column() {
-          Blank().height(200 as number)
-          Text('已到达末尾').fontSize(12).fontColor('#999').margin({ top: 20 })
-        }
-        .width('100%')
+        // 控制层
+        ReaderController({
+          controllerState: this.controllerState,
+          title: this.title,
+          currentChapterIndex: this.currentChapterIndex,
+          currentPageIndex: this.currentPageIndex,
+          totalChapters: this.chapters.length,
+          chapters: this.chapters,
+          bookmarks: this.bookmarks,
+          onBack: () => {
+            this.saveProgressImmediate().then(() => router.back());
+          },
+          onAddBookmark: () => this.addBookmark(),
+          onJumpToChapter: (idx: number, pageIdx: number) => this.jumpToChapter(idx, pageIdx),
+          onJumpToBookmark: (bm: Bookmark) => this.jumpToBookmark(bm),
+          onDeleteBookmark: (id: string) => this.deleteBookmark(id)
+        })
       }
-    }
-    .width('100%')
-    .layoutWeight(1)
-    .scrollBar(BarState.Auto)
-    .edgeEffect(EdgeEffect.Spring)
-    // ✅ 关键修复：准确监听滚动索引变化
-    .onScrollIndex((start: number, end: number) => {
-      // 记录真实的可见索引范围
-      this.visibleStartIndex = start;
-      this.visibleEndIndex = end;
-
-      // 更新当前章节（取可见范围的中间值更准确）
-      const visibleChapterStart = Math.max(0, start);
-      const visibleChapterEnd = Math.min(this.chapters.length - 1, end);
-      const mainChapter = Math.floor((visibleChapterStart + visibleChapterEnd) / 2);
-
-      if (mainChapter !== this.currentChapterIndex && mainChapter < this.chapters.length) {
-        this.currentChapterIndex = mainChapter;
-        // 延迟保存进度
-        this.saveProgressDelayed();
-      }
-    })
-    .cachedCount(3)  // ✅ 优化：减少缓存数量，降低内存占用
-    .listDirection(Axis.Vertical)
-  }
-
-  @Builder
-  ChapterContentBuilder(chapter: Chapter, index: number) {
-    Column() {
-      if (this.shouldShowChapterTitle(chapter.title, index)) {
-        Text(chapter.title)
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor('#2c2c2c')
-          .margin({ top: index === 0 ? 16 : 32, bottom: 16 })
-          .width('100%')
-          .textAlign(TextAlign.Start)
-      }
-
-      Text(this.getChapterText(chapter))
-        .fontSize(18)
-        .lineHeight(32)
-        .fontColor('#2c2c2c')
-        .width('100%')
-        .textAlign(TextAlign.Start)
-        .textOverflow({ overflow: TextOverflow.Clip })
-        .maxLines(undefined)
-        .padding({ bottom: 24 })
-    }
-    .width('100%')
-    .padding({ left: 20, right: 20 })
-    .backgroundColor('#f4efe7')
-  }
-
-  private shouldShowChapterTitle(title: string, index: number): boolean {
-    const content = this.getChapterText(this.chapters[index]);
-    const trimmedContent = content.trimStart();
-    if (trimmedContent.startsWith(title)) return false;
-    if (title.startsWith('第') && title.includes('部分')) return true;
-    return true;
-  }
-
-  private getChapterText(chapter: Chapter): string {
-    const start = chapter.index;
-    const end = start + (chapter.contentLength || 0);
-    return this.content.substring(start, end);
-  }
-
-  @Builder
-  BottomBar() {
-    Row() {
-      Text(`章节 ${this.currentChapterIndex + 1}/${this.chapters.length}`)
-        .fontSize(12)
-        .fontColor('#666')
-
-      Blank()
-
-      Button('+ 书签')
-        .fontSize(12)
-        .height(28)
-        .backgroundColor('#e6d7c3')
-        .fontColor('#5c4b37')
-        .onClick(() => this.showAddBookmark = true)
-    }
-    .width('100%')
-    .height(50)
-    .padding({ left: 20, right: 20 })
-    .backgroundColor('#f2f2f2')
-    .border({ width: { top: 1 }, color: '#e0e0e0' })
-  }
-
-  @Builder
-  CatalogPanel() {
-    Stack() {
-      Row()
-        .width('100%')
-        .height('100%')
-        .backgroundColor('rgba(0,0,0,0.5)')
-        .onClick(() => this.showCatalog = false)
-
-      Row() {
-        Column() {
-          Text('目录')
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .margin({ top: 40, bottom: 20 })
-            .width('100%')
-            .textAlign(TextAlign.Center)
-
-          List() {
-            ForEach(this.chapters, (chapter: Chapter, index: number) => {
-              ListItem() {
-                Row() {
-                  Text(chapter.title)
-                    .fontSize(16)
-                    .fontColor(index === this.currentChapterIndex ? '#ff6b6b' : '#333')
-                    .fontWeight(index === this.currentChapterIndex ? FontWeight.Bold : FontWeight.Normal)
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .layoutWeight(1)
-
-                  if (index === this.currentChapterIndex) {
-                    Text('●')
-                      .fontSize(12)
-                      .fontColor('#ff6b6b')
-                  }
-                }
-                .width('100%')
-                .padding(16)
-                .backgroundColor(index === this.currentChapterIndex ? '#fff5f5' : Color.Transparent)
-                .onClick(() => this.jumpToChapter(index))
-              }
-            })
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .divider({ strokeWidth: 1, color: '#f0f0f0' })
-
-          Button('关闭')
-            .width('80%')
-            .margin({ top: 16, bottom: 20 })
-            .onClick(() => this.showCatalog = false)
-        }
-        .width('75%')
-        .height('100%')
-        .backgroundColor('#fff')
-        .padding({ left: 16, right: 16 })
-      }
-      .width('100%')
-      .height('100%')
-      .justifyContent(FlexAlign.Start)
     }
     .width('100%')
     .height('100%')
-    .zIndex(100)
+    .backgroundColor(Theme.BG_COLOR)
   }
 
-  @Builder
-  BookmarkPanel() {
-    Stack() {
-      Row()
-        .width('100%')
-        .height('100%')
-        .backgroundColor('rgba(0,0,0,0.5)')
-        .onClick(() => this.showBookmarks = false)
-
-      Row() {
-        Column() {
-          Text('我的书签')
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .margin({ top: 40, bottom: 20 })
-            .width('100%')
-            .textAlign(TextAlign.Center)
-
-          if (this.bookmarks.length === 0) {
-            Column() {
-              Text('暂无书签')
-                .fontSize(14)
-                .fontColor('#999')
-                .margin({ top: 50 })
-            }
-            .layoutWeight(1)
-          } else {
-            List() {
-              ForEach(this.bookmarks, (bookmark: Bookmark, index: number) => {
-                ListItem() {
-                  Row() {
-                    Column() {
-                      Text(bookmark.excerpt)
-                        .fontSize(14)
-                        .fontColor('#333')
-                        .maxLines(2)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        .width('100%')
-
-                      Text(`第${bookmark.chapterIndex + 1}章 · ${this.formatTime(bookmark.timestamp)}`)
-                        .fontSize(12)
-                        .fontColor('#999')
-                        .margin({ top: 4 })
-                    }
-                    .layoutWeight(1)
-                    .alignItems(HorizontalAlign.Start)
-                  }
-                  .width('100%')
-                  .padding(12)
-                  .backgroundColor('#f9f9f9')
-                  .borderRadius(8)
-                }
-                .swipeAction({ end: this.DeleteButton(bookmark.id) })
-                .onClick(() => this.jumpToBookmark(bookmark))
-              })
-            }
-            .width('100%')
-            .layoutWeight(1)
-            .divider({ strokeWidth: 1, color: '#f0f0f0' })
-            .padding({ bottom: 12 })
-          }
-
-          Button('关闭')
-            .width('80%')
-            .margin({ bottom: 20 })
-            .onClick(() => this.showBookmarks = false)
-        }
-        .width('100%')
-        .height('100%')
-        .backgroundColor('#fff')
-        .padding({ left: 16, right: 16 })
-      }
-      .width('80%')
-      .height('100%')
-      .position({ x: '20%', y: 0 })
-    }
-    .width('100%')
-    .height('100%')
-    .zIndex(100)
-  }
-
-  @Builder
-  DeleteButton(id: string) {
-    Button() {
-      Text('删除')
-        .fontColor('#fff')
-        .fontSize(14)
-    }
-    .width(60)
-    .height('100%')
-    .backgroundColor('#ff4d4f')
-    .onClick(() => {
-      this.deleteBookmark(id);
-    })
-  }
-
-  @Builder
-  AddBookmarkDialog() {
-    Column() {
-      Row()
-        .width('100%')
-        .height('100%')
-        .backgroundColor('rgba(0,0,0,0.6)')
-        .onClick(() => this.showAddBookmark = false)
-
-      Column() {
-        Text('添加书签')
-          .fontSize(18)
-          .fontWeight(FontWeight.Bold)
-          .margin({ bottom: 16 })
-
-        Text(`当前位置：第${this.currentChapterIndex + 1}章`)
-          .fontSize(14)
-          .fontColor('#666')
-          .margin({ bottom: 20 })
-
-        Text('确定要在当前位置添加书签吗？')
-          .fontSize(14)
-          .fontColor('#333')
-          .margin({ bottom: 24 })
-
-        Row({ space: 12 }) {
-          Button('取消')
-            .width(100)
-            .backgroundColor('#f0f0f0')
-            .fontColor('#666')
-            .onClick(() => this.showAddBookmark = false)
-
-          Button('确定')
-            .width(100)
-            .backgroundColor('#ff6b6b')
-            .fontColor('#fff')
-            .onClick(() => this.addBookmark())
-        }
-      }
-      .width(300)
-      .padding(24)
-      .backgroundColor('#fff')
-      .borderRadius(12)
-      .position({ x: '50%', y: '50%' })
-      .markAnchor({ x: 150, y: -100 })
-    }
-    .width('100%')
-    .height('100%')
-    .position({ x: 0, y: 0 })
-    .zIndex(200)
-  }
-
-  @Builder
-  LoadingView() {
+  @Builder LoadingView() {
     Column() {
       LoadingProgress().width(40).height(40)
-      Text('加载中...').fontSize(14).fontColor('#999').margin({ top: 12 })
+      Text('正在加载书籍...').fontSize(14).margin({ top: 12 })
+      Text('大文件可能需要一些时间').fontSize(12).fontColor('#999').margin({ top: 8 })
     }
-    .layoutWeight(1)
+    .width('100%')
+    .height('100%')
     .justifyContent(FlexAlign.Center)
   }
 
-  @Builder
-  ErrorView() {
+  @Builder ErrorView() {
     Column() {
-      Text('⚠️').fontSize(48).margin({ bottom: 16 })
-      Text(this.errorMsg).fontSize(14).fontColor('#FF4D4F').textAlign(TextAlign.Center)
+      Text(this.errorMsg).fontSize(14).fontColor('#FF4D4F')
       Button('返回').margin({ top: 20 }).onClick(() => router.back())
     }
-    .layoutWeight(1)
+    .width('100%')
+    .height('100%')
     .justifyContent(FlexAlign.Center)
-    .padding(20)
-  }
-
-  formatTime(timestamp: number): string {
-    const date = new Date(timestamp);
-    return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
   }
 }
