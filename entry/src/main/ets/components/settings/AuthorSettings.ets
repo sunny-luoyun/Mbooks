@@ -2,6 +2,7 @@
 import { SettingsService } from '../../services/SettingsService';
 import { WatchedAuthor } from '../../models/SettingsModels';
 import promptAction from '@ohos.promptAction';
+import router from '@ohos.router'; // 确保引入了 router
 
 @Component
 export struct AuthorSettings {
@@ -163,6 +164,12 @@ export struct AuthorSettings {
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
               .margin({ right: 12 })
+              .onClick(() => {
+                // 1. 设置全局搜索关键词
+                AppStorage.setOrCreate('globalSearchKey', author.name);
+                // 2. 发送信号通知 Index 切换 Tab (2 代表搜索页)
+                AppStorage.setOrCreate('mainTabIndex', 2);
+              })
 
               // 通知开关
               Column() {

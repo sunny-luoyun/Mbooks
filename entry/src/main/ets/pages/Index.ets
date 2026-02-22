@@ -7,7 +7,7 @@ import { SearchPage } from '../components/SearchPage';
 @Entry
 @Component
 struct Index {
-  @State currentIndex: number = 0
+  @StorageLink('mainTabIndex') currentIndex: number = 0
   private controller: TabsController = new TabsController()
 
   @Builder TabBuilder(title: string, index: number) {
@@ -24,7 +24,7 @@ struct Index {
 
   build() {
     Column() {
-      Tabs({ barPosition: BarPosition.End, controller: this.controller }) {
+      Tabs({ barPosition: BarPosition.End, controller: this.controller, index: this.currentIndex }) {
         TabContent() { ShelfPage() }.tabBar(this.TabBuilder('书架', 0))
         TabContent() { UpdateFeedPage() }.tabBar(this.TabBuilder('最新', 1))
         TabContent() { SearchPage() }.tabBar(this.TabBuilder('搜索', 2))

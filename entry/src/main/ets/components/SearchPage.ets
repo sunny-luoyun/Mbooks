@@ -5,16 +5,26 @@ import { ThreadItemWithMarks } from '../models/SettingsModels';
 
 @Component
 export struct SearchPage {
-  @State searchKey: string = ""
+  @StorageLink('globalSearchKey') @Watch('onSearchKeyChange') searchKey: string = ""
   @State searchResults: ThreadItemWithMarks[] = []
   @State isSearching: boolean = false
   private crawler: CrawlerService | null = null
 
+  // 监听函数：当 searchKey 发生变化时自动执行
+  onSearchKeyChange() {
+    if (this.searchKey) {
+      this.doSearch(this.searchKey)
+    }
+  }
+
   aboutToAppear(): void {
     this.crawler = new CrawlerService(getContext(this) as Context)
-    // 默认显示所有（空搜索）
-    this.doSearch("")
+    this.doSearch(this.searchKey || "")
+
+
+    this.doSearch("");
   }
+
 
   private doSearch(keyword: string): void {
     this.isSearching = true
