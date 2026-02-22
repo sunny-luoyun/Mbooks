@@ -1,0 +1,32 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "小小天依"
+    },
+    {
+      "name": "app_name",
+      "value": "小小天依"
+    },
+    {
+      "name": "reason_internet",
+      "value": "需要网络权限以从论坛获取小说更新内容"
+    },
+    {
+      "name": "reason_read_media",
+      "value": "用于读取本地书籍文件和阅读进度数据"
+    },
+    {
+      "name": "reason_write_media",
+      "value": "用于保存阅读进度和书签数据"
+    }
+  ]
+}
