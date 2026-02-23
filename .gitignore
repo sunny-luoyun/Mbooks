@@ -52,3 +52,4 @@ yarn-error.log*
 
 *~build-profile.json5
 signing-config.json
+/build-profile.json5
