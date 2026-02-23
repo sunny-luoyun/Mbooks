@@ -1,5 +1,4 @@
-// entry/src/main/ets/services/DownloadService.ets (修复版)
-
+// entry/src/main/ets/services/DownloadService.ets
 import http from '@ohos.net.http';
 import fs from '@ohos.file.fs';
 
@@ -12,6 +11,7 @@ export interface DownloadedPost {
 export interface PostTimeInfo {
   time: string;
 }
+
 export interface ThreadMeta {
   threadId: string;
   title: string;
@@ -19,11 +19,6 @@ export interface ThreadMeta {
   lastUpdate: string;
   lastPageOffset: number;
   posts: Record<string, PostTimeInfo>;
-}
-
-export interface PostDivInfo {
-  id: string;
-  html: string;
 }
 
 export class DownloadService {
@@ -46,6 +41,8 @@ export class DownloadService {
 
   /**
    * 执行全量或增量下载
+   * 增量模式：从最后一页倒序扫描，遇到全页重复即停
+   * 全量模式：从第 1 页正序扫到底
    */
   public async downloadThread(
     threadId: string,
@@ -57,70 +54,145 @@ export class DownloadService {
       onProgress(5);
 
       // 1. 读取本地 Meta 信息
-      const metaPath = `${this.context.filesDir}/threads/${threadId}_meta.json`;
+      const dir = `${this.context.filesDir}/threads`;
+      if (!fs.accessSync(dir)) {
+        fs.mkdirSync(dir);
+      }
+      const metaPath = `${dir}/${threadId}_meta.json`;
+      const txtPath  = `${dir}/${threadId}.txt`;
+
       let meta: ThreadMeta = {
-        threadId: threadId, title: title, author: author,
-        lastUpdate: '', lastPageOffset: 0, posts: {}
-      } as ThreadMeta;
-      let existingPostIds = new Set<string>();
+        threadId,
+        title,
+        author,
+        lastUpdate: '',
+        lastPageOffset: 0,
+        posts: {}
+      };
+      let isUpdateMode = false;
 
       if (fs.accessSync(metaPath)) {
-        const metaStr = fs.readTextSync(metaPath);
-        meta = JSON.parse(metaStr) as ThreadMeta;
-        existingPostIds = new Set(Object.keys(meta.posts));
+        try {
+          const metaStr = fs.readTextSync(metaPath);
+          meta = JSON.parse(metaStr) as ThreadMeta;
+          isUpdateMode = Object.keys(meta.posts).length > 0;
+          console.log(`[DownloadService] 增量模式，已有 ${Object.keys(meta.posts).length} 条楼层`);
+        } catch (e) {
+          console.warn('[DownloadService] 读取 meta 失败，降级为全量下载', e);
+        }
       }
 
-      // 2. 请求第一页，获取总页数
+      const existingPostIds = new Set<string>(Object.keys(meta.posts));
+
+      // 2. 请求第一页，获取真实作者和总页数
       const firstHtml = await this.fetchHtml(`${this.BASE_URL}/thread/${threadId}`);
       if (!firstHtml) return false;
 
+      const realAuthor = this.parseThreadAuthor(firstHtml) || meta.author || author;
       const totalPages = this.getTotalPages(firstHtml);
-      const startPage = Math.max(1, Math.min(Math.floor(meta.lastPageOffset / this.PAGE_SIZE) + 1, totalPages));
 
-      let newPosts: DownloadedPost[] = [];
+      const newPosts: DownloadedPost[] = [];
 
-      // 3. 开始分页抓取
-      for (let p = startPage; p <= totalPages; p++) {
-        const progress = 5 + Math.floor(((p - startPage + 1) / (totalPages - startPage + 1)) * 85);
-        onProgress(progress);
+      if (isUpdateMode) {
+        // ── 增量模式：从最后一页倒序扫，遇到全页重复即停 ──────────────────
+        console.log(`[DownloadService] 共 ${totalPages} 页，增量倒序从第 ${totalPages} 页开始，作者=${realAuthor}`);
 
-        const url = p > 1
-          ? `${this.BASE_URL}/thread/${threadId}/+${(p - 1) * this.PAGE_SIZE}`
-          : `${this.BASE_URL}/thread/${threadId}`;
-        const html = p === 1 ? firstHtml : await this.fetchHtml(url);
+        for (let p = totalPages; p >= 1; p--) {
+          // 进度：扫过的页数 / 总页数
+          const progress = 5 + Math.floor(((totalPages - p + 1) / totalPages) * 85);
+          onProgress(progress);
 
-        if (!html) continue;
+          // 第 1 页复用已请求的 firstHtml，其余重新请求
+          const url = p > 1
+            ? `${this.BASE_URL}/thread/${threadId}/+${(p - 1) * this.PAGE_SIZE}`
+            : `${this.BASE_URL}/thread/${threadId}`;
+          const html = (p === 1) ? firstHtml : await this.fetchHtml(url);
 
-        const pagePosts = this.parsePosts(html, author);
-        const newOnPage = pagePosts.filter(post => !existingPostIds.has(post.postId));
+          if (!html) {
+            console.warn(`[DownloadService] 第 ${p} 页获取失败，跳过`);
+            continue;
+          }
 
-        newPosts.push(...newOnPage);
+          const pagePosts  = this.parsePosts(html, realAuthor);
+          const newOnPage  = pagePosts.filter(post => !existingPostIds.has(post.postId));
 
-        // 增量拦截：如果本页所有楼主楼层都已存在，停止扫描
-        if (pagePosts.length > 0 && newOnPage.length === 0 && Object.keys(meta.posts).length > 0) {
-          break;
+          // 倒序收集，用 unshift 保证最终顺序仍是从早到晚
+          newPosts.unshift(...newOnPage);
+
+          console.log(`[DownloadService] 第 ${p}/${totalPages} 页：作者帖 ${pagePosts.length} 条，新增 ${newOnPage.length} 条`);
+
+          // 这一页楼主帖全部是旧数据 → 更早的页肯定也是旧数据，停止
+          if (pagePosts.length > 0 && newOnPage.length === 0) {
+            console.log(`[DownloadService] 第 ${p} 页全部重复，停止倒序扫描`);
+            break;
+          }
+
+          // 已扫到第 1 页就不需要再等了
+          if (p > 1) {
+            await this.sleep(500 + Math.floor(Math.random() * 500));
+          }
         }
 
-        if (p < totalPages) {
-          await new Promise<void>(resolve => setTimeout(resolve, 500 + Math.random() * 500));
+      } else {
+        // ── 全量模式：正序从第 1 页扫到底 ─────────────────────────────────
+        console.log(`[DownloadService] 共 ${totalPages} 页，全量正序，作者=${realAuthor}`);
+
+        for (let p = 1; p <= totalPages; p++) {
+          const progress = 5 + Math.floor((p / totalPages) * 85);
+          onProgress(progress);
+
+          const url = p > 1
+            ? `${this.BASE_URL}/thread/${threadId}/+${(p - 1) * this.PAGE_SIZE}`
+            : `${this.BASE_URL}/thread/${threadId}`;
+          const html = (p === 1) ? firstHtml : await this.fetchHtml(url);
+
+          if (!html) {
+            console.warn(`[DownloadService] 第 ${p} 页获取失败，跳过`);
+            continue;
+          }
+
+          const pagePosts = this.parsePosts(html, realAuthor);
+          newPosts.push(...pagePosts);
+
+          console.log(`[DownloadService] 第 ${p}/${totalPages} 页：作者帖 ${pagePosts.length} 条`);
+
+          if (p < totalPages) {
+            await this.sleep(500 + Math.floor(Math.random() * 500));
+          }
         }
       }
 
-      // 4. 保存数据
+      // 3. 保存数据
       onProgress(95);
-      if (newPosts.length > 0 || !fs.accessSync(`${this.context.filesDir}/threads/${threadId}.txt`)) {
-        await this.saveData(threadId, title, author, newPosts, meta, metaPath);
-      }
+      await this.saveData(threadId, meta.title || title, realAuthor, newPosts, meta, metaPath, txtPath, isUpdateMode);
 
       onProgress(100);
+      console.log(`[DownloadService] 完成：新增 ${newPosts.length} 章`);
       return true;
 
     } catch (e) {
-      console.error('DownloadService Error:', e);
+      console.error('[DownloadService] downloadThread Error:', e);
       return false;
     }
   }
 
+  // ─── 解析帖子真实作者（首楼的 ui-link） ────────────────────────────────
+  private parseThreadAuthor(html: string): string {
+    // 找第一个 mm-post div 里的 ui-link
+    const postStart = html.indexOf('class="mm-post"');
+    if (postStart === -1) return '';
+    // 在这个 post 范围内找 ui-link
+    const linkIdx = html.indexOf('class="ui-link"', postStart);
+    if (linkIdx === -1) return '';
+    const textStart = html.indexOf('>', linkIdx) + 1;
+    const textEnd   = html.indexOf('<', textStart);
+    if (textStart > 0 && textEnd > textStart) {
+      return html.substring(textStart, textEnd).trim();
+    }
+    return '';
+  }
+
+  // ─── 网络请求 ────────────────────────────────────────────────────────────
   private async fetchHtml(url: string): Promise<string | null> {
     const httpRequest = http.createHttp();
     try {
@@ -139,56 +211,59 @@ export class DownloadService {
       }
       return null;
     } catch (err) {
-      console.error(`Fetch error for ${url}:`, err);
+      console.error(`[DownloadService] Fetch error for ${url}:`, err);
       return null;
     } finally {
       httpRequest.destroy();
     }
   }
 
+  // ─── 获取总页数 ──────────────────────────────────────────────────────────
   private getTotalPages(html: string): number {
     let maxPage = 1;
-    // 修复：使用 RegExp 构造函数替代正则字面量
     const regex = new RegExp('/thread/\\d+/\\+(\\d+)', 'g');
     let match: RegExpExecArray | null;
-
     while ((match = regex.exec(html)) !== null) {
-      const offset = parseInt(match[1]);
-      const page = Math.floor(offset / this.PAGE_SIZE) + 1;
+      const page = Math.floor(parseInt(match[1]) / this.PAGE_SIZE) + 1;
       if (page > maxPage) maxPage = page;
     }
     return maxPage;
   }
 
-
+  // ─── 解析某一页的楼主帖子 ────────────────────────────────────────────────
   private parsePosts(html: string, targetAuthor: string): DownloadedPost[] {
     const posts: DownloadedPost[] = [];
-
-    // 使用字符串扫描而非正则，避免灾难性回溯
     let pos = 0;
     const htmlLength = html.length;
 
     while (pos < htmlLength) {
-      // 查找下一个帖子 div 开始
+      // 查找帖子 div：<div id="p数字"
       const divStart = html.indexOf('<div id="p', pos);
       if (divStart === -1) break;
 
-      // 提取 post ID
-      const idStart = divStart + 10; // 跳过 '<div id="p'
+      const idStart = divStart + 10;
       const idEnd = html.indexOf('"', idStart);
       if (idEnd === -1) break;
 
-      const postId = 'p' + html.substring(idStart, idEnd);
+      // 确认是纯数字 id
+      const rawId = html.substring(idStart, idEnd);
+      if (!/^\d+$/.test(rawId)) {
+        pos = idEnd + 1;
+        continue;
+      }
+      const postId = 'p' + rawId;
 
-      // 找到这个 div 的结束位置（找到对应的 </div>）
+      // 找到这个 div 完整结束位置
+      const tagEnd = html.indexOf('>', idEnd);
+      if (tagEnd === -1) break;
+
       let depth = 1;
-      let searchPos = html.indexOf('>', idEnd) + 1; // 跳过开始标签
-      let divEnd = searchPos;
+      let searchPos = tagEnd + 1;
+      let divEnd = tagEnd + 1;
 
       while (depth > 0 && searchPos < htmlLength) {
-        const nextOpen = html.indexOf('<div', searchPos);
+        const nextOpen  = html.indexOf('<div', searchPos);
         const nextClose = html.indexOf('</div>', searchPos);
-
         if (nextClose === -1) break;
 
         if (nextOpen !== -1 && nextOpen < nextClose) {
@@ -203,14 +278,14 @@ export class DownloadService {
 
       const postHtml = html.substring(divStart, divEnd + 6);
 
-      // 提取作者 - 使用简单字符串查找
-      const authorMatch = this.extractAuthor(postHtml);
-      if (authorMatch !== targetAuthor) {
+      // 提取作者
+      const postAuthor = this.extractAuthor(postHtml);
+      if (postAuthor !== targetAuthor) {
         pos = divEnd + 6;
         continue;
       }
 
-      // 提取内容
+      // 提取正文
       const content = this.extractContent(postHtml);
       if (content && content.length >= this.MIN_CONTENT_LENGTH) {
         const time = this.extractTime(postHtml);
@@ -224,18 +299,10 @@ export class DownloadService {
   }
 
   private extractAuthor(postHtml: string): string {
-    // 查找 <a class="ui-link"> 或 <a ... class="ui-link">
     const idx = postHtml.indexOf('class="ui-link"');
     if (idx === -1) return '';
-
-    // 向前找 <a 标签开始
-    const aStart = postHtml.lastIndexOf('<a', idx);
-    if (aStart === -1) return '';
-
-    // 向后找 > 和 <
     const textStart = postHtml.indexOf('>', idx) + 1;
-    const textEnd = postHtml.indexOf('<', textStart);
-
+    const textEnd   = postHtml.indexOf('<', textStart);
     if (textStart > 0 && textEnd > textStart) {
       return postHtml.substring(textStart, textEnd).trim();
     }
@@ -243,21 +310,17 @@ export class DownloadService {
   }
 
   private extractContent(postHtml: string): string {
-    // 找到 card-body
     const bodyStartIdx = postHtml.indexOf('<div class="card-body"');
     if (bodyStartIdx === -1) return '';
 
     const contentStart = postHtml.indexOf('>', bodyStartIdx) + 1;
-
-    // 找到对应的 </div>（需要处理嵌套）
     let depth = 1;
     let pos = contentStart;
     const len = postHtml.length;
 
     while (depth > 0 && pos < len) {
-      const openIdx = postHtml.indexOf('<div', pos);
+      const openIdx  = postHtml.indexOf('<div', pos);
       const closeIdx = postHtml.indexOf('</div>', pos);
-
       if (closeIdx === -1) break;
 
       if (openIdx !== -1 && openIdx < closeIdx) {
@@ -267,33 +330,25 @@ export class DownloadService {
         depth--;
         if (depth === 0) {
           let rawContent = postHtml.substring(contentStart, closeIdx);
-
-          // 剔除 blockquote
           rawContent = this.removeBlockquotes(rawContent);
-
           return this.cleanHtmlContent(rawContent);
         }
         pos = closeIdx + 6;
       }
     }
-
     return '';
   }
 
   private removeBlockquotes(html: string): string {
     let result = html;
     let start = result.indexOf('<blockquote');
-
     while (start !== -1) {
       let depth = 1;
       let pos = result.indexOf('>', start) + 1;
-
       while (depth > 0 && pos < result.length) {
-        const open = result.indexOf('<blockquote', pos);
+        const open  = result.indexOf('<blockquote', pos);
         const close = result.indexOf('</blockquote>', pos);
-
         if (close === -1) break;
-
         if (open !== -1 && open < close) {
           depth++;
           pos = open + 11;
@@ -306,23 +361,18 @@ export class DownloadService {
           pos = close + 13;
         }
       }
-
       start = result.indexOf('<blockquote');
     }
-
     return result;
   }
 
   private extractTime(postHtml: string): string {
     const timeIdx = postHtml.indexOf('<time');
     if (timeIdx === -1) return '';
-
     const datetimeIdx = postHtml.indexOf('datetime="', timeIdx);
     if (datetimeIdx === -1) return '';
-
     const valStart = datetimeIdx + 10;
-    const valEnd = postHtml.indexOf('"', valStart);
-
+    const valEnd   = postHtml.indexOf('"', valStart);
     if (valEnd > valStart) {
       return postHtml.substring(valStart, valEnd);
     }
@@ -331,116 +381,184 @@ export class DownloadService {
 
   private cleanHtmlContent(html: string): string {
     if (!html) return '';
-
     let text = html;
-
-    // 替换 <br>
     text = text.replace(/<br\s*\/?>/gi, '\n');
-
-    // 替换 <p> 标签
     text = text.replace(/<\/p>\s*<p[^>]*>/gi, '\n\n');
     text = text.replace(/<\/?p[^>]*>/gi, '');
-
-    // 移除所有其他 HTML 标签
     text = text.replace(/<[^>]+>/g, '');
 
-    // 解码 HTML 实体
     const entities: Record<string, string> = {
       '&nbsp;': ' ', '&lt;': '<', '&gt;': '>', '&amp;': '&',
       '&quot;': '"', '&#39;': "'", '&mdash;': '—', '&ndash;': '–',
-      '&hellip;': '…', '&ldquo;': '“', '&rdquo;': '”',
-      '&lsquo;': '‘', '&rsquo;': '’'
+      '&hellip;': '…', '&ldquo;': '\u201c', '&rdquo;': '\u201d',
+      '&lsquo;': '\u2018', '&rsquo;': '\u2019'
     };
     for (const entry of Object.entries(entities)) {
       text = text.split(entry[0]).join(entry[1]);
     }
 
-    // 清理空白
     text = text.replace(/\n[ \t]+\n/g, '\n\n');
     text = text.replace(/[ \t]+/g, ' ');
     text = text.replace(/\n{4,}/g, '\n\n\n');
-
     return text.trim();
   }
 
+  // ─── 【核心修复】从旧 TXT 中恢复章节列表 ──────────────────────────────
+  /**
+   * 对齐 Python 版 get_old_chapters_from_txt：
+   * 用 【章节 N】 作为分隔符 split，取 index≥1 的部分 strip 后返回。
+   * 不做二次 split，不过滤长度（已在写入时过滤过）。
+   */
+  private getOldChaptersFromTxt(txtPath: string): string[] {
+    if (!fs.accessSync(txtPath)) return [];
+    try {
+      const content = fs.readTextSync(txtPath);
+      // 以 【章节 数字】 为分隔符切割
+      const parts = content.split(/【章节 \d+】/);
+      // parts[0] 是书名/作者头部，从 parts[1] 开始是正文
+      const chapters: string[] = [];
+      for (let i = 1; i < parts.length; i++) {
+        const stripped = parts[i].trim();
+        // 去掉末尾的分割线（---- ... ----）
+        const cleanedChapter = stripped.replace(/\n*-{10,}\n*$/, '').trim();
+        if (cleanedChapter.length > 0) {
+          chapters.push(cleanedChapter);
+        }
+      }
+      console.log(`[DownloadService] 从 TXT 恢复旧章节: ${chapters.length} 章`);
+      return chapters;
+    } catch (e) {
+      console.warn('[DownloadService] 读取旧 TXT 失败:', e);
+      return [];
+    }
+  }
+
+  // ─── 计算下次增量起始 offset ─────────────────────────────────────────────
+  private calcLastPageOffset(_existingCount: number, _newCount: number): number {
+    return 0;
+  }
+
+  // ─── 【核心修复】持久化：正确拼合旧章节 + 新章节 ───────────────────────
   private async saveData(
     threadId: string,
     title: string,
     author: string,
     newPosts: DownloadedPost[],
     meta: ThreadMeta,
-    metaPath: string
+    metaPath: string,
+    txtPath: string,
+    isUpdateMode: boolean
   ): Promise<void> {
     const dir = `${this.context.filesDir}/threads`;
     if (!fs.accessSync(dir)) {
       fs.mkdirSync(dir);
     }
 
-    const txtPath = `${dir}/${threadId}.txt`;
+    // 用 post_id 去重（与 Python save_data 一致）
+    const existingPostIds = new Set<string>(Object.keys(meta.posts));
+    const newValidPosts = newPosts.filter(
+      p => !existingPostIds.has(p.postId) && p.content.length >= this.MIN_CONTENT_LENGTH
+    );
 
-    // 1. 拼接并保存 TXT
-    let finalContents: string[] = [];
-    if (fs.accessSync(txtPath) && Object.keys(meta.posts).length > 0) {
-      // 增量模式：读取旧内容并分割章节
-      const oldText = fs.readTextSync(txtPath);
-      // 修复：使用 RegExp 构造函数
-      const chapterRegex = new RegExp('【章节 \\d+】\\n\\n', 'g');
-      const parts = oldText.split(chapterRegex);
+    // ── 拼合章节（对齐 Python save_data 逻辑） ──────────────────────────
+    let finalContents: string[];
 
-      for (let i = 1; i < parts.length; i++) {
-        // 去除末尾的分割线
-        const separatorRegex = new RegExp('\\n\\n-{60}\\n\\n', 'g');
-        const chapterParts = parts[i].split(separatorRegex);
-        const chapterText = chapterParts[0];
-        if (chapterText.trim().length >= this.MIN_CONTENT_LENGTH) {
-          finalContents.push(chapterText.trim());
-        }
-      }
+    if (isUpdateMode && fs.accessSync(txtPath) && Object.keys(meta.posts).length > 0) {
+      // 增量模式：读取旧 TXT 恢复章节，追加新章节
+      const oldChapters = this.getOldChaptersFromTxt(txtPath);
+      finalContents = [...oldChapters, ...newValidPosts.map(p => p.content)];
+      console.log(`[DownloadService] 增量拼合：旧 ${oldChapters.length} 章 + 新 ${newValidPosts.length} 章 = 共 ${finalContents.length} 章`);
+    } else {
+      // 全量模式
+      finalContents = newPosts
+        .filter(p => p.content.length >= this.MIN_CONTENT_LENGTH)
+        .map(p => p.content);
+      console.log(`[DownloadService] 全量保存：共 ${finalContents.length} 章`);
     }
 
-    // 追加新章节
-    newPosts.forEach(p => finalContents.push(p.content));
+    // ── 写 TXT ───────────────────────────────────────────────────────────
+    if (finalContents.length > 0) {
+      let outText = `${title}\n作者: ${author}\n${'='.repeat(60)}\n\n`;
+      finalContents.forEach((content, index) => {
+        outText += `【章节 ${index + 1}】\n\n${content}\n\n${'-'.repeat(60)}\n\n`;
+      });
 
-    // 写入新 TXT
-    const file = fs.openSync(txtPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-    let outText = `${title}\n作者: ${author}\n${"=".repeat(60)}\n\n`;
+      const file = fs.openSync(txtPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      fs.writeSync(file.fd, outText);
+      fs.closeSync(file);
+      console.log(`[DownloadService] TXT 写入完成: ${txtPath}`);
+    }
 
-    finalContents.forEach((content, index) => {
-      outText += `【章节 ${index + 1}】\n\n${content}\n\n${"-".repeat(60)}\n\n`;
-    });
-
-    fs.writeSync(file.fd, outText);
-    fs.closeSync(file);
-
-    // 2. 更新 Meta JSON
+    // ── 写 Meta JSON（合并 posts） ────────────────────────────────────────
     const newIdsDict: Record<string, PostTimeInfo> = {};
     newPosts.forEach(p => {
       newIdsDict[p.postId] = { time: p.time };
     });
-    // 合并 posts
+
+    // 合并旧 posts + 新 posts
     const allPosts: Record<string, PostTimeInfo> = {};
-    // 复制 meta.posts 到 allPosts
-    const metaPostKeys = Object.keys(meta.posts);
-    for (let i = 0; i < metaPostKeys.length; i++) {
-      const key = metaPostKeys[i];
+    for (const key of Object.keys(meta.posts)) {
       allPosts[key] = meta.posts[key];
     }
-    // 复制 newIdsDict 到 allPosts
-    const newIdsKeys = Object.keys(newIdsDict);
-    for (let i = 0; i < newIdsKeys.length; i++) {
-      const key = newIdsKeys[i];
+    for (const key of Object.keys(newIdsDict)) {
       allPosts[key] = newIdsDict[key];
     }
-    const totalPosts = Object.keys(allPosts).length;
 
-    meta.lastUpdate = new Date().toISOString();
-    meta.lastPageOffset = totalPosts <= this.PAGE_SIZE
-      ? 0
-      : Math.max(0, Math.floor(totalPosts / this.PAGE_SIZE) - 1) * this.PAGE_SIZE;
+    meta.title        = title;   // 更新可能变化的标题
+    meta.author       = author;
+    meta.lastUpdate   = new Date().toISOString();
+    meta.lastPageOffset = this.calcLastPageOffset(
+      Object.keys(meta.posts).length,
+      Object.keys(newIdsDict).length
+    );
     meta.posts = allPosts;
 
     const metaFile = fs.openSync(metaPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
     fs.writeSync(metaFile.fd, JSON.stringify(meta, null, 2));
     fs.closeSync(metaFile);
+    console.log(`[DownloadService] Meta 写入完成，总楼层: ${Object.keys(allPosts).length}`);
+  }
+
+  // ─── 工具 ────────────────────────────────────────────────────────────────
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // ─── 查询本地已下载列表 ──────────────────────────────────────────────────
+  public getDownloadedThreadIds(): string[] {
+    const dir = `${this.context.filesDir}/threads`;
+    if (!fs.accessSync(dir)) return [];
+    try {
+      const files = fs.listFileSync(dir);
+      return files
+        .filter((f: string) => f.endsWith('_meta.json'))
+        .map((f: string) => f.replace('_meta.json', ''));
+    } catch (e) {
+      return [];
+    }
+  }
+
+  public isDownloaded(threadId: string): boolean {
+    return fs.accessSync(`${this.context.filesDir}/threads/${threadId}.txt`);
+  }
+
+  public readLocalContent(threadId: string): string {
+    const path = `${this.context.filesDir}/threads/${threadId}.txt`;
+    if (!fs.accessSync(path)) return '';
+    try {
+      return fs.readTextSync(path);
+    } catch (e) {
+      return '';
+    }
+  }
+
+  public getLocalMeta(threadId: string): ThreadMeta | null {
+    const path = `${this.context.filesDir}/threads/${threadId}_meta.json`;
+    if (!fs.accessSync(path)) return null;
+    try {
+      return JSON.parse(fs.readTextSync(path)) as ThreadMeta;
+    } catch (e) {
+      return null;
+    }
   }
 }

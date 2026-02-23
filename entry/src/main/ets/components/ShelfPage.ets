@@ -7,6 +7,7 @@ import { ConfigurationConstant } from '@kit.AbilityKit';
 import { CrawlerService } from '../services/CrawlerService';
 import { DownloadResult } from '../models/SettingsModels';
 import { ThreadMeta } from '../services/DownloadService';
+import { DownloadService } from '../services/DownloadService';
 
 interface PostTimeInfo {
   time: string;
@@ -233,70 +234,29 @@ export struct ShelfPage {
   }
   async updateBook(book: LocalBook): Promise<void> {
     this.isRefreshing = true;
+    console.log(`[UpdateTest] ===== 开始更新: ${book.title} (${book.threadId}) =====`);
     try {
       const ctx = getContext(this) as common.UIAbilityContext;
-      const metaPath = this.getMetaPath(book.threadId);
-      let existingIds: string[] = [];
-      let author: string = book.author;
+      const ds = DownloadService.getInstance(ctx);
 
-      if (fs.accessSync(metaPath)) {
-        try {
-          const metaContent = fs.readTextSync(metaPath);
-          const meta: ThreadMeta = JSON.parse(metaContent) as ThreadMeta;
-          existingIds = Object.keys(meta.posts || {} as Record<string, PostTimeInfo>);
-          author = meta.author || book.author;
-        } catch (e) {
-          console.error('Read meta failed:', e);
+      const success = await ds.downloadThread(
+        book.threadId,
+        book.title,
+        book.author,
+        (progress) => {
+          console.log(`[ShelfPage] 更新进度: ${progress}%`);
         }
-      }
+      );
 
-      if (this.crawler) {
-        const existingSet = new Set<string>(existingIds);
-        const res: DownloadResult = await this.crawler.fetchThreadFullContent(book.threadId, existingSet);
-
-        if (res.newIds.length > 0) {
-          const filePath = this.getFullPath(book.fileName);
-          const fileExists = fs.accessSync(filePath);
-
-          const file = fs.openSync(filePath,
-            fileExists ? fs.OpenMode.READ_WRITE | fs.OpenMode.APPEND
-              : fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-
-          if (!fileExists) {
-            const header = `${book.title}\n作者: ${res.author || author}\n${"=".repeat(60)}\n\n`;
-            fs.writeSync(file.fd, header);
-          }
-
-          fs.writeSync(file.fd, res.content);
-          fs.closeSync(file);
-
-          const newPosts: Record<string, PostTimeInfo> = {};
-          existingIds.forEach(id => newPosts[id] = { time: '' });
-          res.newIds.forEach(id => newPosts[id] = { time: new Date().toISOString() });
-
-          const newMeta: ThreadMeta = {
-            threadId: book.threadId,
-            title: book.title,
-            author: res.author || author,
-            lastUpdate: new Date().toISOString(),
-            lastPageOffset: Math.floor(Object.keys(newPosts).length / 20) * 20,
-            posts: newPosts
-          };
-
-          const mFile = fs.openSync(metaPath,
-            fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-          fs.writeSync(mFile.fd, JSON.stringify(newMeta, null, 2));
-          fs.closeSync(mFile);
-
-          promptAction.showToast({ message: `更新了 ${res.newIds.length} 章` });
-          this.scanLocalFiles();
-        } else {
-          promptAction.showToast({ message: "已是最新" });
-        }
+      if (success) {
+        promptAction.showToast({ message: '更新成功' });
+        this.scanLocalFiles();
+      } else {
+        promptAction.showToast({ message: '更新失败' });
       }
     } catch (e) {
       console.error('Update failed', e);
-      promptAction.showToast({ message: "更新失败" });
+      promptAction.showToast({ message: '更新失败' });
     } finally {
       this.isRefreshing = false;
     }
