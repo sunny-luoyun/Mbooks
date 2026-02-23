@@ -28,8 +28,9 @@ interface PostContent {
 @Entry
 @Component
 struct DetailPage {
-  // 监听系统颜色模式变化
   @StorageProp('currentColorMode') currentMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
+  // ✅ 新增：从 AppStorage 读取状态栏高度（由 EntryAbility 写入）
+  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
   @State threadId: string = '';
   @State title: string = '';
@@ -46,7 +47,6 @@ struct DetailPage {
   private readonly BASE_URL = "https://mirror.chromaso.net";
   private downloadService: DownloadService | null = null;
 
-  // 辅助函数：判断是否为深色模式
   isDarkMode(): boolean {
     return this.currentMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
   }
@@ -71,14 +71,12 @@ struct DetailPage {
     this.isLoading = true;
     this.errorMsg = '';
 
-    // ✅ 修复：增加重试机制，最多重试2次
     const maxRetry = 2;
     for (let attempt = 0; attempt <= maxRetry; attempt++) {
       try {
         const localInfo = this.getLocalThreadInfo();
         const content = await this.fetchContent();
 
-        // ✅ 修复：更严格的成功判断，排除所有已知错误前缀
         const errorPrefixes = ['未找到', '获取内容失败', '解析内容失败', '内容为空', '下载失败'];
         const isError = !content ||
           content.length < 30 ||
@@ -99,9 +97,8 @@ struct DetailPage {
             totalPosts: 1
           };
           this.isLoading = false;
-          return; // ✅ 成功则提前退出
+          return;
         } else {
-          // ✅ 如果不是最后一次重试，等待后重试
           if (attempt < maxRetry) {
             console.warn(`[DetailPage] 内容加载异常，第${attempt + 1}次重试，原因: ${content?.substring(0, 80)}`);
             await new Promise<void>(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
@@ -171,23 +168,21 @@ struct DetailPage {
       const response = await httpRequest.request(url, {
         method: http.RequestMethod.GET,
         header: {
-          // ✅ 修复：补全请求头，避免被服务器识别为爬虫而返回异常页面
           'User-Agent': 'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          'Accept-Encoding': 'identity', // ✅ 关键：禁止压缩，防止响应被截断导致解析失败
-          'Referer': this.BASE_URL + '/',  // ✅ 关键：添加 Referer，避免防盗链拦截
+          'Accept-Encoding': 'identity',
+          'Referer': this.BASE_URL + '/',
           'Connection': 'keep-alive',
           'Cache-Control': 'no-cache',
         },
         expectDataType: http.HttpDataType.STRING,
-        connectTimeout: 10000,  // ✅ 新增：10秒连接超时
-        readTimeout: 30000,     // ✅ 新增：30秒读取超时（大页面需要更长时间）
+        connectTimeout: 10000,
+        readTimeout: 30000,
       });
 
       if (response.responseCode === 200) {
         const html = response.result as string;
-        // ✅ 新增：验证返回的HTML是否有效
         if (!html || html.length < 200) {
           return '获取内容失败: 响应内容过短（' + (html?.length || 0) + ' bytes）';
         }
@@ -207,9 +202,6 @@ struct DetailPage {
 
   private parseContentFromHtml(html: string): string {
     try {
-      // ✅ 修复：按优先级尝试多种解析策略
-
-      // 策略1：找第一个 <div id="p..."> 下的 card-body（最标准结构）
       const postStart = html.indexOf('<div id="p');
       if (postStart !== -1) {
         const cardBodyIdx = html.indexOf('<div class="card-body"', postStart);
@@ -221,7 +213,6 @@ struct DetailPage {
         }
       }
 
-      // 策略2：直接找第一个 card-body（兜底，适用于结构稍有不同的页面）
       const firstCardBody = html.indexOf('<div class="card-body"');
       if (firstCardBody !== -1) {
         const result = this.extractDivContent(html, firstCardBody);
@@ -230,7 +221,6 @@ struct DetailPage {
         }
       }
 
-      // 策略3：找 root container 区域
       const rootIdx = html.indexOf('class="root container"');
       if (rootIdx !== -1) {
         const endIdx = html.indexOf('</div>', rootIdx + 500);
@@ -245,7 +235,6 @@ struct DetailPage {
     }
   }
 
-  // ✅ 新增：安全提取 div 内容的辅助方法（替换原有脆弱的 depth 计数）
   private extractDivContent(html: string, divStartIdx: number): string | null {
     try {
       const contentStart = html.indexOf('>', divStartIdx) + 1;
@@ -253,7 +242,7 @@ struct DetailPage {
 
       let depth = 1;
       let pos = contentStart;
-      const maxLen = Math.min(html.length, contentStart + 500000); // 防止超大页面卡死
+      const maxLen = Math.min(html.length, contentStart + 500000);
 
       while (depth > 0 && pos < maxLen) {
         const nextOpen = html.indexOf('<div', pos);
@@ -294,7 +283,7 @@ struct DetailPage {
     const entities: Record<string, string> = {
       '&nbsp;': ' ', '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"',
       '&#39;': "'", '&mdash;': '—', '&ndash;': '–', '&hellip;': '…',
-      '&ldquo;': '“', '&rdquo;': '”', '&lsquo;': '‘', '&rsquo;': '’'
+      '&ldquo;': '"', '&rdquo;': '"', '&lsquo;': "", '&rsquo;': ""
     };
     for (const entry of Object.entries(entities)) {
       text = text.replace(new RegExp(entry[0], 'g'), entry[1]);
@@ -382,8 +371,17 @@ struct DetailPage {
       Text('    ').fontSize(16)
     }
     .width('100%')
-    .padding(16)
+    .padding({
+      left: 16,
+      right: 16,
+      // ✅ 核心改动：顶部 padding 加上状态栏高度，防止标题行被状态栏遮住
+      // px2vp() 将物理像素转换为虚拟像素，保证不同分辨率屏幕下显示一致
+      top: 12 + px2vp(this.statusBarHeight),
+      bottom: 12
+    })
     .backgroundColor(this.isDarkMode() ? '#1A1A1A' : '#FFFFFF')
+    // ✅ 让 HeaderBar 背景色向上延伸填满状态栏区域，实现与状态栏"融为一体"的效果
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
   }
 
   @Builder
@@ -542,5 +540,7 @@ struct DetailPage {
     .width('100%')
     .height('100%')
     .backgroundColor(this.isDarkMode() ? '#000000' : '#FFFFFF')
+    // ✅ 整体容器向上扩展，配合 EntryAbility 的全屏布局，让背景色填满状态栏区域
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

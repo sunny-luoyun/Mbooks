@@ -266,6 +266,8 @@ export struct UpdateFeedPage {
       })
     })
   }
+  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
+
 
   build() {
     Column() {
@@ -302,9 +304,12 @@ export struct UpdateFeedPage {
           .onClick(() => this.startCheck(false))
       }
       .width('100%')
-      .padding(16)
-      .backgroundColor(this.getColors().headerBg)
-      .shadow({ radius: 2, color: this.getColors().shadow })
+      .padding({
+        left: 16,
+        right: 16,
+        top: 16 + px2vp(this.statusBarHeight),  // ✅ 加上状态栏高度
+        bottom: 16
+      })
 
       if (this.isLoading) {
         LoadingProgress()

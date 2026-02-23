@@ -357,6 +357,7 @@ export struct ShelfPage {
   // ====================================================
   // Builder
   // ====================================================
+  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
   @Builder
   HeaderBar() {
@@ -397,7 +398,13 @@ export struct ShelfPage {
       }
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    .padding({
+      left: 16,
+      right: 16,
+      // ✅ 顶部 padding = 原有间距 + 状态栏高度（px 转 vp）
+      top: 12 + px2vp(this.statusBarHeight),
+      bottom: 12
+    })
     .backgroundColor(this.getColors().headerBg)
   }
 

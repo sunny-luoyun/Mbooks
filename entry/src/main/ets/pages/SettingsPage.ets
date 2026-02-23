@@ -38,6 +38,8 @@ export struct SettingsPage {
 
   private tabs: string[] = ['爬取设置', '关注作者', '关注书籍', '关于'];
 
+  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
+
   build() {
     // 在 build 内部实时获取当前颜色配置，确保 UI 响应
     Column() {
@@ -70,7 +72,8 @@ export struct SettingsPage {
         }, (tab: string) => tab)
       }
       .width('100%')
-      .height(50)
+      .height(50 + px2vp(this.statusBarHeight))  // ✅ 高度撑开
+      //.paddingTop(px2vp(this.statusBarHeight))   // ✅ 内容下移，避免被遮
       .backgroundColor(getSettingsPageColors(this.colorMode).headerBg)
       .shadow({ radius: 2, color: getSettingsPageColors(this.colorMode).shadowColor })
 

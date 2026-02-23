@@ -166,6 +166,7 @@ export struct SearchPage {
       })
     })
   }
+  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
   build() {
     Column() {
@@ -175,7 +176,12 @@ export struct SearchPage {
         .fontWeight(FontWeight.Bold)
         .fontColor(this.getColors().primaryText)
         .width('100%')
-        .padding(16)
+        .padding({
+          left: 16,
+          right: 16,
+          top: 16 + px2vp(this.statusBarHeight),  // ✅ 加上状态栏高度
+          bottom: 16
+        })
 
       // 搜索框
       Search({
