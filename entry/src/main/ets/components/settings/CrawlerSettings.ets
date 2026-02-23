@@ -4,6 +4,9 @@ import { SettingsService } from '../../services/SettingsService';
 import promptAction from '@ohos.promptAction';
 import { Configuration } from '@ohos.app.ability.Configuration';
 import common from '@ohos.app.ability.common';
+// ✅ 修复：静态导入，替代之前的动态 import + 解构
+import { getPixivService } from '../../services/PixivService';
+import { saveSessionId, clearSessionId } from '../../utils/PreferencesUtil';
 
 interface ColorConfig {
   pageBg: string;
@@ -22,34 +25,22 @@ interface ColorConfig {
   divider: string;
 }
 
-// 颜色配置函数 - 根据模式返回对应颜色
 function getCrawlerSettingsColors(mode: number): ColorConfig {
-  const isDark = mode === 0; // ColorMode.Dark = 1
+  const isDark = mode === 0;
   return {
-    // 背景色
     pageBg: isDark ? '#0D0D0D' : '#F5F5F5',
     cardBg: isDark ? '#1E1E1E' : '#FFFFFF',
     headerBg: isDark ? '#141414' : '#FFFFFF',
-
-    // 文字色
     primaryText: isDark ? '#E6E6E6' : '#000000',
     secondaryText: isDark ? '#999999' : '#666666',
     tertiaryText: isDark ? '#666666' : '#999999',
     accentText: '#007DFF',
     dangerText: '#FF4D4F',
-
-    // 滑块颜色
     sliderTrack: isDark ? '#3A3A3A' : '#E5E5E5',
     sliderBlock: '#007DFF',
-
-    // 开关颜色
     toggleOn: '#007DFF',
     toggleOff: isDark ? '#3A3A3A' : '#CCCCCC',
-
-    // 提示文字
     hintText: isDark ? '#555555' : '#999999',
-
-    // 分割线（如有需要）
     divider: isDark ? '#2A2A2A' : '#E5E5E5'
   };
 }
@@ -64,7 +55,13 @@ export struct CrawlerSettings {
     autoCheckOnStartup: false,
     checkIntervalHours: 0
   };
-  @State colorMode: number = 0; // 0 = Light, 1 = Dark
+  @State colorMode: number = 0;
+
+  // ── Pixiv Cookie 状态 ──
+  @StorageLink('pixivSessionId') pixivSessionId: string = '';
+  @State showCookieText: boolean = false;
+  @State cookieCheckState: string = 'idle';
+
   private settingsService: SettingsService | null = null;
   private unsubscribe: (() => void) | null = null;
   private configChangeCallback: () => void = () => {};
@@ -78,20 +75,18 @@ export struct CrawlerSettings {
     this.unsubscribe = this.settingsService.subscribe((settings): void => {
       this.localConfig = this.copyConfig(settings.crawler);
     });
-    // 初始化颜色模式
+
     const ctx = getContext(this) as common.UIAbilityContext;
     this.colorMode = ctx.config?.colorMode || 0;
-    // 监听系统颜色模式变化 - 使用ApplicationContext的配置监听
     this.configChangeCallback = () => {
       this.colorMode = ctx.config?.colorMode || 0;
     };
     this.configCallbackId = ctx.getApplicationContext().on('environment', {
       onConfigurationUpdated: this.configChangeCallback,
-      onMemoryLevel: (level: number) => {
-        // 内存级别变化的处理
-      }
+      onMemoryLevel: (level: number) => {}
     });
   }
+
   aboutToDisappear(): void {
     if (this.unsubscribe) {
       this.unsubscribe();
@@ -101,12 +96,11 @@ export struct CrawlerSettings {
       ctx.getApplicationContext().off('environment', this.configCallbackId);
     }
   }
-  // 获取当前颜色配置
+
   private getColors(): ColorConfig {
     return getCrawlerSettingsColors(this.colorMode);
   }
 
-  // 深拷贝配置
   private copyConfig(config: CrawlerConfig): CrawlerConfig {
     return {
       maxPagesPerRun: config.maxPagesPerRun,
@@ -118,51 +112,34 @@ export struct CrawlerSettings {
     };
   }
 
-  // 关键方法：更新指定字段，替换整个对象触发UI
   private setConfigField(
     field: string,
     value: number | boolean,
     saveToService: boolean = true
   ): void {
-    // 创建新对象，确保ArkTS检测到变化
     this.localConfig = {
-      maxPagesPerRun: field === 'maxPagesPerRun' ? value as number : this.localConfig.maxPagesPerRun,
-      stopAfterOldPages: field === 'stopAfterOldPages' ? value as number : this.localConfig.stopAfterOldPages,
-      requestDelay: field === 'requestDelay' ? value as number : this.localConfig.requestDelay,
-      enableBreakpoint: field === 'enableBreakpoint' ? value as boolean : this.localConfig.enableBreakpoint,
+      maxPagesPerRun:    field === 'maxPagesPerRun'    ? value as number  : this.localConfig.maxPagesPerRun,
+      stopAfterOldPages: field === 'stopAfterOldPages' ? value as number  : this.localConfig.stopAfterOldPages,
+      requestDelay:      field === 'requestDelay'      ? value as number  : this.localConfig.requestDelay,
+      enableBreakpoint:  field === 'enableBreakpoint'  ? value as boolean : this.localConfig.enableBreakpoint,
       autoCheckOnStartup: field === 'autoCheckOnStartup' ? value as boolean : this.localConfig.autoCheckOnStartup,
-      checkIntervalHours: field === 'checkIntervalHours' ? value as number : this.localConfig.checkIntervalHours
+      checkIntervalHours: field === 'checkIntervalHours' ? value as number  : this.localConfig.checkIntervalHours
     };
 
-    // 保存到Service
     if (saveToService) {
-      // 使用条件判断替代动态属性名
       const partialConfig: Partial<CrawlerConfig> = {};
       switch (field) {
-        case 'maxPagesPerRun':
-          partialConfig.maxPagesPerRun = value as number;
-          break;
-        case 'stopAfterOldPages':
-          partialConfig.stopAfterOldPages = value as number;
-          break;
-        case 'requestDelay':
-          partialConfig.requestDelay = value as number;
-          break;
-        case 'enableBreakpoint':
-          partialConfig.enableBreakpoint = value as boolean;
-          break;
-        case 'autoCheckOnStartup':
-          partialConfig.autoCheckOnStartup = value as boolean;
-          break;
-        case 'checkIntervalHours':
-          partialConfig.checkIntervalHours = value as number;
-          break;
+        case 'maxPagesPerRun':     partialConfig.maxPagesPerRun     = value as number;  break;
+        case 'stopAfterOldPages':  partialConfig.stopAfterOldPages  = value as number;  break;
+        case 'requestDelay':       partialConfig.requestDelay       = value as number;  break;
+        case 'enableBreakpoint':   partialConfig.enableBreakpoint   = value as boolean; break;
+        case 'autoCheckOnStartup': partialConfig.autoCheckOnStartup = value as boolean; break;
+        case 'checkIntervalHours': partialConfig.checkIntervalHours = value as number;  break;
       }
       this.settingsService?.updateCrawlerConfig(partialConfig);
     }
   }
 
-  // 重置为默认
   private resetToDefault(): void {
     const defaultConfig: CrawlerConfig = {
       maxPagesPerRun: 5,
@@ -177,7 +154,42 @@ export struct CrawlerSettings {
     promptAction.showToast({ message: '已恢复默认设置' });
   }
 
-  // 头部文字信息组件
+  // ✅ 修复：去掉动态 import 和解构，直接调用顶部静态导入的 getPixivService
+  private async checkCookieValidity(): Promise<void> {
+    if (!this.pixivSessionId.trim()) {
+      promptAction.showToast({ message: '请先填入 PHPSESSID' });
+      return;
+    }
+    this.cookieCheckState = 'checking';
+    try {
+      const svc = getPixivService();
+      const result = await svc.checkLogin();   // 现在返回 ServiceResult<boolean>
+
+      if (!result.success) {
+        // 网络错误，不是 Cookie 问题
+        this.cookieCheckState = 'idle';
+        promptAction.showToast({ message: `⚠️ 网络异常，无法验证：${result.error}` });
+        return;
+      }
+
+      const ok = result.data ?? false;
+      this.cookieCheckState = ok ? 'ok' : 'fail';
+      promptAction.showToast({
+        message: ok ? '✅ Cookie 有效，登录成功' : '❌ Cookie 已失效，请重新获取'
+      });
+    } catch (_) {
+      this.cookieCheckState = 'idle';   // 注意：这里改为 'idle' 而非 'fail'
+      promptAction.showToast({ message: '网络异常，无法验证（非 Cookie 问题）' });
+    }
+  }
+
+  private clearCookie(): void {
+    this.pixivSessionId = '';
+    this.cookieCheckState = 'idle';
+    clearSessionId();  // ✅ 同时从磁盘清除
+    promptAction.showToast({ message: 'Cookie 已清除' });
+  }
+
   @Builder
   ItemHeader(title: string, desc: string, value: string) {
     Row() {
@@ -198,6 +210,122 @@ export struct CrawlerSettings {
     }.width('100%').margin({ bottom: 8 })
   }
 
+  @Builder
+  PixivCookieCard() {
+    Column() {
+
+      // 标题行
+      Row() {
+        Row() {
+          Text('Pixiv 账号 Cookie')
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.getColors().primaryText)
+
+          if (this.cookieCheckState === 'ok') {
+            Text(' ●')
+              .fontSize(12)
+              .fontColor('#52C41A')
+          } else if (this.cookieCheckState === 'fail') {
+            Text(' ●')
+              .fontSize(12)
+              .fontColor('#FF4D4F')
+          } else if (this.pixivSessionId.length > 0 && this.cookieCheckState === 'idle') {
+            Text(' ●')
+              .fontSize(12)
+              .fontColor('#FAAD14')
+          }
+        }
+        .alignItems(VerticalAlign.Center)
+
+        Blank()
+
+        Text(this.showCookieText ? '隐藏' : '显示')
+          .fontSize(13)
+          .fontColor(this.getColors().accentText)
+          .onClick((): void => {
+            this.showCookieText = !this.showCookieText;
+          })
+      }
+      .width('100%')
+      .margin({ bottom: 10 })
+
+      // 输入框
+      TextInput({
+        text: this.pixivSessionId,
+        placeholder: '粘贴浏览器中的 PHPSESSID 值...'
+      })
+        .width('100%')
+        .height(44)
+        .fontSize(13)
+        .fontColor(this.getColors().primaryText)
+        .placeholderColor(this.getColors().tertiaryText)
+        .backgroundColor(this.getColors().pageBg)
+        .borderRadius(8)
+        .padding({ left: 12, right: 12 })
+        .border({
+          width: 1,
+          color: this.pixivSessionId.length === 0
+            ? this.getColors().divider
+            : this.cookieCheckState === 'ok'
+              ? '#52C41A'
+              : this.cookieCheckState === 'fail'
+                ? '#FF4D4F'
+                : this.getColors().accentText,
+          radius: 8
+        })
+        .type(this.showCookieText ? InputType.Normal : InputType.Password)
+        .onChange((val: string): void => {
+          this.pixivSessionId = val;
+          this.cookieCheckState = 'idle';
+          // ✅ 实时持久化，防止用户输一半就退出
+          saveSessionId(val);
+        })
+
+      // 操作按钮行
+      Row() {
+        Button(this.cookieCheckState === 'checking' ? '验证中...' : '验证 Cookie')
+          .fontSize(13)
+          .height(36)
+          .layoutWeight(1)
+          .fontColor('#FFFFFF')
+          .backgroundColor(
+            this.cookieCheckState === 'ok'   ? '#52C41A' :
+              this.cookieCheckState === 'fail' ? '#FF4D4F' :
+                this.getColors().accentText
+          )
+          .borderRadius(8)
+          .enabled(this.cookieCheckState !== 'checking')
+          .onClick((): void => { this.checkCookieValidity(); })
+
+        if (this.pixivSessionId.length > 0) {
+          Button('清除')
+            .fontSize(13)
+            .height(36)
+            .fontColor(this.getColors().dangerText)
+            .backgroundColor(Color.Transparent)
+            .borderRadius(8)
+            .margin({ left: 8 })
+            .onClick((): void => { this.clearCookie(); })
+        }
+      }
+      .width('100%')
+      .margin({ top: 12 })
+
+      // 底部说明
+      Text('在浏览器登录 pixiv.net 后，打开开发者工具 → Application → Cookies，找到 PHPSESSID 复制粘贴到此处')
+        .fontSize(11)
+        .fontColor(this.getColors().hintText)
+        .margin({ top: 10 })
+        .lineHeight(18)
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor(this.getColors().cardBg)
+    .borderRadius(12)
+    .margin({ bottom: 12 })
+  }
+
   build() {
     Column() {
       // 标题栏
@@ -216,6 +344,9 @@ export struct CrawlerSettings {
       .width('100%')
       .padding({ top: 16, bottom: 16 })
 
+      // Pixiv Cookie 卡片
+      this.PixivCookieCard()
+
       // 1. 单次最大页数
       Column() {
         this.ItemHeader('单次最大页数', '每次检查更新的最大翻页数', this.localConfig.maxPagesPerRun + '页')
@@ -231,9 +362,7 @@ export struct CrawlerSettings {
           .blockColor(this.getColors().sliderBlock)
           .selectedColor(this.getColors().accentText)
           .onChange((val: number, mode: SliderChangeMode): void => {
-            // 实时更新UI（不保存到Service）
             this.setConfigField('maxPagesPerRun', val, false);
-            // 滑动结束时保存
             if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
               this.settingsService?.updateCrawlerConfig({ maxPagesPerRun: val });
             }
@@ -342,7 +471,6 @@ export struct CrawlerSettings {
         .margin({ bottom: 12 })
       }
 
-      // 底部说明
       Text('提示：请求间隔建议保持800ms以上，避免被封IP')
         .fontSize(12)
         .fontColor(this.getColors().hintText)

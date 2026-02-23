@@ -145,7 +145,7 @@ export struct ShelfPage {
 
   /** 非作者模式下，排序后的书单 */
   private getSortedBooks(): LocalBook[] {
-    const arr = [...this.localBooks];
+    const arr = this.localBooks.slice();
     if (this.sortMode === SortMode.ByTitle) {
       arr.sort((a, b) => a.title.localeCompare(b.title, 'zh'));
     } else {

@@ -3,10 +3,13 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { Configuration } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { initPreferences } from '../utils/PreferencesUtil';
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     AppStorage.setOrCreate('currentColorMode', this.context.config.colorMode);
+    AppStorage.setOrCreate('pixivSessionId', '');
+    initPreferences(this.context);
   }
 
   onConfigurationUpdate(newConfig: Configuration): void {
