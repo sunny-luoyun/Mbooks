@@ -329,6 +329,8 @@ struct ReaderPage {
     this.loadingProgress = 100;
     this.loadingText = '加载完成';
 
+    emitter.emit(READER_EVENTS.UPDATE_PAGINATION, { data: {} });
+
     // 加载书签（分页完成后才能校验 globalPage 范围）
     await this.loadBookmarks();
 
@@ -350,11 +352,11 @@ struct ReaderPage {
       this.pageIndices = [...indices];
       this.chapterContents = [...contents];
       this.totalPages = globalPage;
-      if (this.isLoading && globalPage >= 50) {
+      //if (this.isLoading && globalPage >= 50) {
         // 有足够内容后提前结束 loading，用户可以开始阅读
-        this.isLoading = false;
-        setTimeout(() => this.restorePosition(), 100);
-      }
+        //this.isLoading = false;
+        //setTimeout(() => this.restorePosition(), 100);
+      //}
     }
   }
 
@@ -481,10 +483,14 @@ struct ReaderPage {
           lineIdx++;
           if (!this.isTrailingPunct(ch)) {
             if (lineIdx < lines.length) {
-              offsets[lineIdx] = pos;
+              offsets[lineIdx] = pos; // 当前字符位置作为新行起始
             }
             curW = w;
           } else {
+            // ✅ 标点归入上一行后，新行起始应该是下一个字符
+            if (lineIdx < lines.length) {
+              offsets[lineIdx] = pos + 1; // pos+1 才是新行第一个字符
+            }
             curW = 0;
           }
         } else {
