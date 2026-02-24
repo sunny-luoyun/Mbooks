@@ -702,7 +702,7 @@ export struct SearchPage {
     // 空状态
     else if (!this.isPixivSearching) {
       Column() {
-        Text('🎌')
+        Text('🥲🈚️')
           .fontSize(60)
           .margin({ bottom: 16 })
         Text(this.searchKey
