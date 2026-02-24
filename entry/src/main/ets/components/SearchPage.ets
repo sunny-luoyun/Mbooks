@@ -22,7 +22,60 @@ import { getPixivService, PixivService, SearchThrottle } from '../services/Pixiv
 import { pixivCacheDB } from '../database/PixivCacheDB';
 
 // ========================================
-// 颜色配置（完全保留原有，追加 Pixiv 所需字段）
+// 搜索历史管理器
+// 使用 PersistentStorage 持久化，重启 App 后历史不丢失
+// ========================================
+
+const HISTORY_KEY = 'searchHistory';
+const MAX_HISTORY = 20; // 最多保留 20 条历史
+
+class SearchHistoryManager {
+  /**
+   * 读取历史记录列表
+   */
+  static getHistory(): string[] {
+    try {
+      const raw = AppStorage.get<string>(HISTORY_KEY) ?? '[]';
+      return JSON.parse(raw) as string[];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 添加一条搜索记录（去重 + 置顶 + 限长）
+   */
+  static addHistory(keyword: string): void {
+    if (!keyword.trim()) return;
+    const list = SearchHistoryManager.getHistory();
+    // 去重：如果已存在则先移除旧的
+    const filtered = list.filter(k => k !== keyword);
+    // 置顶插入
+    filtered.unshift(keyword);
+    // 超出上限截断
+    const trimmed = filtered.slice(0, MAX_HISTORY);
+    AppStorage.setOrCreate(HISTORY_KEY, JSON.stringify(trimmed));
+  }
+
+  /**
+   * 删除单条历史记录
+   */
+  static removeHistory(keyword: string): void {
+    const list = SearchHistoryManager.getHistory();
+    const filtered = list.filter(k => k !== keyword);
+    AppStorage.setOrCreate(HISTORY_KEY, JSON.stringify(filtered));
+  }
+
+  /**
+   * 清空全部历史记录
+   */
+  static clearHistory(): void {
+    AppStorage.setOrCreate(HISTORY_KEY, '[]');
+  }
+}
+
+// ========================================
+// 颜色配置（完全保留原有，追加历史记录所需字段）
 // ========================================
 
 interface SearchColors {
@@ -41,7 +94,7 @@ interface SearchColors {
   emptyText: string;
   emptySubText: string;
   divider: string;
-  // ── 新增 Pixiv 专用 ──
+  // ── Pixiv 专用 ──
   tagBg: string;
   tagText: string;
   cachedBadgeBg: string;
@@ -51,6 +104,10 @@ interface SearchColors {
   toggleInactiveBg: string;
   toggleActiveText: string;
   toggleInactiveText: string;
+  // ── 新增：历史记录面板 ──
+  historyPanelBg: string;
+  historyItemHoverBg: string;
+  historyDeleteText: string;
 }
 
 function getSearchColors(mode: number): SearchColors {
@@ -82,6 +139,10 @@ function getSearchColors(mode: number): SearchColors {
     toggleInactiveBg:   isDark ? '#2A2A2A' : '#F0F0F0',
     toggleActiveText:   '#FFFFFF',
     toggleInactiveText: isDark ? '#888888' : '#666666',
+    // ── 历史记录面板 ──
+    historyPanelBg:     isDark ? '#1E1E1E' : '#FFFFFF',
+    historyItemHoverBg: isDark ? '#2A2A2A' : '#F5F5F5',
+    historyDeleteText:  isDark ? '#666666' : '#BBBBBB',
   };
 }
 
@@ -92,14 +153,22 @@ function getSearchColors(mode: number): SearchColors {
 @Component
 export struct SearchPage {
 
-  // ── 原有状态（完全不变）──
-  @StorageLink('globalSearchKey') @Watch('onSearchKeyChange') searchKey: string = ""
+  // ── 原有状态（移除 @Watch，改为手动触发）──
+  @StorageLink('globalSearchKey') searchKey: string = ""
   @State searchResults: ThreadItemWithMarks[] = []
   @State isSearching: boolean = false
   @State colorMode: number = 0;
   private crawler: CrawlerService | null = null
   private configChangeCallback: () => void = () => {};
   private configCallbackId: number = -1;
+
+  // ── 新增：搜索框输入中间状态（与 searchKey 分离）──
+  // inputValue 随输入实时变化，searchKey 只在点击搜索按钮后更新
+  @State private inputValue: string = ""
+
+  // ── 新增：历史记录状态 ──
+  @State private historyList: string[] = []       // 当前历史记录列表
+  @State private showHistory: boolean = false      // 是否显示历史记录面板
 
   // ── 新增：Pixiv 相关状态 ──
   @State searchSource: SearchSource = SearchSource.LOCAL
@@ -109,22 +178,15 @@ export struct SearchPage {
   @State pixivCurrentPage: number = 1
   @State pixivHasMore: boolean = false
   @State pixivTotal: number = 0
-  @State cachingIds: Set<string> = new Set() // 正在缓存中的 ID 集合
-  // Pixiv 搜索配置（可从 AppStorage 读取用户偏好）
+  @State cachingIds: Set<string> = new Set()
   @StorageProp('pixivSortOrder')  pixivSortOrder: string  = PixivSortOrder.DATE_DESC
   @StorageProp('pixivContentMode') pixivContentMode: string = PixivContentMode.ALL
   private pixivService: PixivService = getPixivService()
   private throttle: SearchThrottle = new SearchThrottle(800)
 
   // ========================================
-  // 生命周期（原有逻辑完全保留，追加 DB 初始化）
+  // 生命周期
   // ========================================
-
-  onSearchKeyChange() {
-    if (this.searchKey) {
-      this.doSearch(this.searchKey)
-    }
-  }
 
   aboutToAppear(): void {
     this.crawler = new CrawlerService(getContext(this) as common.UIAbilityContext)
@@ -140,11 +202,16 @@ export struct SearchPage {
       onMemoryLevel: (_level: number) => {}
     });
 
-    // ── 新增：初始化 Pixiv 数据库 ──
+    // 初始化 Pixiv 数据库
     pixivCacheDB.init(ctx);
 
-    this.doSearch(this.searchKey || "")
-    this.doSearch("");
+    // ── 初始化历史记录持久化（确保 AppStorage 有此 key）──
+    PersistentStorage.persistProp(HISTORY_KEY, '[]');
+    this.historyList = SearchHistoryManager.getHistory();
+
+    // ── 初始加载本地书库（不触发 Pixiv 网络请求）──
+    this.inputValue = this.searchKey;
+    this.doLocalSearch(this.searchKey || "");
   }
 
   aboutToDisappear(): void {
@@ -163,19 +230,59 @@ export struct SearchPage {
   }
 
   // ========================================
+  // 历史记录操作
+  // ========================================
+
+  /** 刷新本地历史列表（修改后需调用以触发 UI 更新） */
+  private refreshHistory(): void {
+    this.historyList = SearchHistoryManager.getHistory();
+  }
+
+  /** 点击历史记录项：填入输入框并立即搜索 */
+  private selectHistory(keyword: string): void {
+    this.inputValue = keyword;
+    this.searchKey  = keyword;
+    this.showHistory = false;
+    this.triggerSearch(keyword);
+  }
+
+  /** 删除单条历史 */
+  private deleteHistoryItem(keyword: string): void {
+    SearchHistoryManager.removeHistory(keyword);
+    this.refreshHistory();
+  }
+
+  /** 清空全部历史 */
+  private clearAllHistory(): void {
+    SearchHistoryManager.clearHistory();
+    this.refreshHistory();
+  }
+
+  // ========================================
   // 搜索逻辑
   // ========================================
 
-  // 统一搜索入口：根据 searchSource 分发
-  private doSearch(keyword: string): void {
+  /**
+   * 统一搜索触发入口（只由搜索按钮 / 键盘确认 / 历史选择调用）
+   * 不再由输入框 onChange 触发
+   */
+  private triggerSearch(keyword: string): void {
+    // 保存搜索历史（仅非空关键词）
+    if (keyword.trim()) {
+      SearchHistoryManager.addHistory(keyword.trim());
+      this.refreshHistory();
+    }
+    // 同步 globalSearchKey
+    this.searchKey = keyword;
+
     if (this.searchSource === SearchSource.LOCAL) {
-      this.doLocalSearch(keyword)
+      this.doLocalSearch(keyword);
     } else {
-      this.doPixivSearch(keyword, 1)
+      this.doPixivSearch(keyword, 1);
     }
   }
 
-  // 原有本地搜索（完全不变）
+  // 原有本地搜索（逻辑完全不变）
   private doLocalSearch(keyword: string): void {
     this.isSearching = true
     if (this.crawler) {
@@ -184,10 +291,9 @@ export struct SearchPage {
     this.isSearching = false
   }
 
-  // 新增：Pixiv 联网搜索
+  // Pixiv 联网搜索
   private async doPixivSearch(keyword: string, page: number): Promise<void> {
     if (!keyword.trim()) {
-      // 关键词为空时显示离线缓存列表
       const cached = await pixivCacheDB.getAllCachedNovels()
       this.pixivResults = cached
       this.pixivTotal   = cached.length
@@ -208,7 +314,7 @@ export struct SearchPage {
       this.pixivResults = []
     }
 
-    // ① 优先展示本地缓存结果（秒显，离线友好）
+    // 优先展示本地缓存结果
     if (page === 1) {
       const cached = await pixivCacheDB.getMetaByKeyword(keyword)
       if (cached.length > 0) {
@@ -216,7 +322,7 @@ export struct SearchPage {
       }
     }
 
-    // ② 联网搜索（更新最新结果）
+    // 联网搜索
     const params: PixivSearchParams = {
       keyword,
       page,
@@ -226,31 +332,26 @@ export struct SearchPage {
     }
     const result = await this.pixivService.searchNovels(params)
     if (result.success && result.data) {
-      const data = result.data
-      const novels = data.novels
-      const total = data.total
+      const data    = result.data
+      const novels  = data.novels
+      const total   = data.total
       const hasMore = data.hasMore
 
-      // 合并缓存状态：联网结果里已缓存的条目保持 CACHED 标记
       const merged = await this.mergeCacheStatus(novels)
 
       if (page === 1) {
         this.pixivResults = merged
       } else {
-        // 加载更多：追加
         this.pixivResults = this.pixivResults.concat(merged)
       }
-      this.pixivTotal        = total
-      this.pixivHasMore      = hasMore
-      this.pixivCurrentPage  = page
+      this.pixivTotal       = total
+      this.pixivHasMore     = hasMore
+      this.pixivCurrentPage = page
 
-      // 批量落库元数据（静默，不阻塞 UI）
       pixivCacheDB.saveNovelMetaBatch(novels)
     } else {
-      // 联网失败但有本地缓存时不覆盖，仅提示
       this.pixivErrorMsg = result.error ?? '搜索失败'
       if (this.pixivResults.length === 0) {
-        // 完全无结果才显示错误态
         promptAction.showToast({ message: this.pixivErrorMsg })
       }
     }
@@ -258,31 +359,20 @@ export struct SearchPage {
     this.isPixivSearching = false
   }
 
-  // 联网结果与本地缓存状态合并
+  // 联网结果与本地缓存状态合并（不变）
   private async mergeCacheStatus(novels: PixivNovel[]): Promise<PixivNovel[]> {
     return Promise.all(
       novels.map(async (novel) => {
         const local = await pixivCacheDB.getNovelById(novel.id)
         if (local && local.cacheStatus === CacheStatus.CACHED) {
           return {
-            id: novel.id,
-            title: novel.title,
-            caption: novel.caption,
-            author: novel.author,
-            authorId: novel.authorId,
-            coverUrl: novel.coverUrl,
-            tags: novel.tags,
-            textLength: novel.textLength,
-            pageCount: novel.pageCount,
-            createDate: novel.createDate,
-            updateDate: novel.updateDate,
-            series: novel.series,
-            bookmarkCount: novel.bookmarkCount,
-            viewCount: novel.viewCount,
-            commentCount: novel.commentCount,
-            cacheStatus: CacheStatus.CACHED,
-            cachedAt: local.cachedAt,
-            fullText: local.fullText
+            id: novel.id, title: novel.title, caption: novel.caption,
+            author: novel.author, authorId: novel.authorId, coverUrl: novel.coverUrl,
+            tags: novel.tags, textLength: novel.textLength, pageCount: novel.pageCount,
+            createDate: novel.createDate, updateDate: novel.updateDate,
+            series: novel.series, bookmarkCount: novel.bookmarkCount,
+            viewCount: novel.viewCount, commentCount: novel.commentCount,
+            cacheStatus: CacheStatus.CACHED, cachedAt: local.cachedAt, fullText: local.fullText
           }
         }
         return novel
@@ -290,16 +380,13 @@ export struct SearchPage {
     )
   }
 
-  // 新增：加载下一页
   private loadMorePixiv(): void {
     if (!this.pixivHasMore || this.isPixivSearching) return
     this.doPixivSearch(this.searchKey, this.pixivCurrentPage + 1)
   }
 
-  // 新增：缓存单本正文
   private async cacheNovel(novel: PixivNovel): Promise<void> {
     if (this.cachingIds.has(novel.id)) return
-    // 标记为缓存中（UI 立即反馈）
     const newCachingIds = new Set<string>()
     this.cachingIds.forEach(id => newCachingIds.add(id))
     newCachingIds.add(novel.id)
@@ -308,7 +395,6 @@ export struct SearchPage {
     await pixivCacheDB.markCaching(novel.id)
 
     const result = await this.pixivService.fetchNovelText(novel.id)
-
     if (result.success && result.data) {
       await pixivCacheDB.saveFullText(novel.id, result.data)
       this.updatePixivResultStatusWithText(novel.id, CacheStatus.CACHED, result.data)
@@ -318,21 +404,14 @@ export struct SearchPage {
       this.updatePixivResultStatus(novel.id, CacheStatus.CACHE_FAIL)
       promptAction.showToast({ message: result.error ?? '缓存失败' })
     }
-    // 移出进行中集合
     const next = new Set<string>()
-    this.cachingIds.forEach(id => {
-      if (id !== novel.id) {
-        next.add(id)
-      }
-    })
+    this.cachingIds.forEach(id => { if (id !== novel.id) next.add(id) })
     this.cachingIds = next
   }
 
-  // 删除单本缓存
   private async deleteCache(novel: PixivNovel): Promise<void> {
     try {
       await pixivCacheDB.deleteCachedText(novel.id);
-      // 更新列表状态为未缓存
       this.updatePixivResultStatus(novel.id, CacheStatus.NOT_CACHED);
       promptAction.showToast({ message: `《${novel.title}》缓存已删除` });
     } catch (e) {
@@ -340,104 +419,62 @@ export struct SearchPage {
       promptAction.showToast({ message: '删除失败' });
     }
   }
-  // 更新列表中单条的缓存状态（局部刷新，不重新请求）
+
   private updatePixivResultStatus(novelId: string, status: CacheStatus): void {
     this.pixivResults = this.pixivResults.map(n => {
       if (n.id === novelId) {
-        const updated: PixivNovel = {
-          id: n.id,
-          title: n.title,
-          caption: n.caption,
-          author: n.author,
-          authorId: n.authorId,
-          coverUrl: n.coverUrl,
-          tags: n.tags,
-          textLength: n.textLength,
-          pageCount: n.pageCount,
-          createDate: n.createDate,
-          updateDate: n.updateDate,
-          series: n.series,
-          bookmarkCount: n.bookmarkCount,
-          viewCount: n.viewCount,
-          commentCount: n.commentCount,
-          cacheStatus: status,
-          fullText: n.fullText
+        return {
+          id: n.id, title: n.title, caption: n.caption, author: n.author,
+          authorId: n.authorId, coverUrl: n.coverUrl, tags: n.tags,
+          textLength: n.textLength, pageCount: n.pageCount,
+          createDate: n.createDate, updateDate: n.updateDate, series: n.series,
+          bookmarkCount: n.bookmarkCount, viewCount: n.viewCount,
+          commentCount: n.commentCount, cacheStatus: status, fullText: n.fullText
         } as PixivNovel
-        return updated
       }
       return n
     })
   }
 
-  // 更新缓存状态并设置全文内容
   private updatePixivResultStatusWithText(novelId: string, status: CacheStatus, fullText: string): void {
     this.pixivResults = this.pixivResults.map(n => {
       if (n.id === novelId) {
-        const updated: PixivNovel = {
-          id: n.id,
-          title: n.title,
-          caption: n.caption,
-          author: n.author,
-          authorId: n.authorId,
-          coverUrl: n.coverUrl,
-          tags: n.tags,
-          textLength: n.textLength,
-          pageCount: n.pageCount,
-          createDate: n.createDate,
-          updateDate: n.updateDate,
-          series: n.series,
-          bookmarkCount: n.bookmarkCount,
-          viewCount: n.viewCount,
-          commentCount: n.commentCount,
-          cacheStatus: status,
-          fullText: fullText
+        return {
+          id: n.id, title: n.title, caption: n.caption, author: n.author,
+          authorId: n.authorId, coverUrl: n.coverUrl, tags: n.tags,
+          textLength: n.textLength, pageCount: n.pageCount,
+          createDate: n.createDate, updateDate: n.updateDate, series: n.series,
+          bookmarkCount: n.bookmarkCount, viewCount: n.viewCount,
+          commentCount: n.commentCount, cacheStatus: status, fullText: fullText
         } as PixivNovel
-        return updated
       }
       return n
     })
   }
 
-  // 跳转离线阅读页
   private async openOfflineReader(novel: PixivNovel): Promise<void> {
     const ctx = getContext(this) as common.UIAbilityContext;
     await pixivCacheDB.init(ctx);
-
-    // 仅做存在性验证，不把正文放进路由
     const text = await pixivCacheDB.getFullText(novel.id);
     if (!text) {
       promptAction.showToast({ message: '缓存内容丢失，请重新缓存' });
       return;
     }
-
-    // ✅ 只传轻量参数，正文由阅读页自己从 DB 读
     router.pushUrl({
       url: 'pages/PixivNovelReaderPage',
-      params: {
-        novelId: novel.id,
-        title:   novel.title,
-        author:  novel.author,
-        offline: true
-        // 不传 cachedText！
-      }
+      params: { novelId: novel.id, title: novel.title, author: novel.author, offline: true }
     });
   }
 
-  // 跳转在线阅读页（WebView）
   private openOnlineReader(novel: PixivNovel): void {
-    const novelId = String(novel.id);  // ← 强制转字符串，防止数字ID
+    const novelId = String(novel.id);
     if (!novelId) {
       promptAction.showToast({ message: '无效的小说ID' });
       return;
     }
     router.pushUrl({
       url: 'pages/PixivNovelReaderPage',
-      params: {
-        novelId: novelId,
-        title:   novel.title,
-        author:  novel.author,
-        offline: false
-      }
+      params: { novelId, title: novel.title, author: novel.author, offline: false }
     })
   }
 
@@ -448,56 +485,219 @@ export struct SearchPage {
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
   build() {
-    Column() {
+    // 最外层用 Stack，让历史记录面板可以浮动覆盖在内容上方
+    Stack({ alignContent: Alignment.TopStart }) {
 
-      // ── 标题（原有，不变）──
-      Text('搜索')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.getColors().primaryText)
-        .width('100%')
-        .padding({
-          left:   16,
-          right:  16,
-          top:    16 + px2vp(this.statusBarHeight),
-          bottom: 16
-        })
+      // ── 主体内容（Column，与原来一致）──
+      Column() {
 
-      // ── 搜索框（原有，仅改 placeholder 适配双模式）──
-      Search({
-        value:       this.searchKey,
-        placeholder: this.searchSource === SearchSource.LOCAL
-          ? '输入标题、作者或ID搜索已爬取的帖子...'
-          : '搜索 Pixiv 小说标题、作者或标签...'
-      })
-        .width('92%')
-        .backgroundColor(this.getColors().searchBg)
-        .placeholderColor(this.getColors().tertiaryText)
-        .fontColor(this.getColors().primaryText)
-        .onChange((value: string): void => {
-          this.searchKey = value
-        })
-        .onSubmit((value: string): void => {
-          this.doSearch(value)
-        })
+        // 标题（原有，不变）
+        Text('搜索')
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.getColors().primaryText)
+          .width('100%')
+          .padding({
+            left:   16,
+            right:  16,
+            top:    16 + px2vp(this.statusBarHeight),
+            bottom: 16
+          })
 
-      // ── 新增：搜索源切换 Tab ──
-      this.SearchSourceToggle()
+        // ── 新版搜索栏：输入框 + 搜索按钮 ──
+        this.SearchBar()
 
-      // ── 根据搜索源展示不同内容 ──
-      if (this.searchSource === SearchSource.LOCAL) {
-        this.LocalSearchContent()
-      } else {
-        this.PixivSearchContent()
+        // 搜索源切换 Tab
+        this.SearchSourceToggle()
+
+        // 根据搜索源展示内容
+        if (this.searchSource === SearchSource.LOCAL) {
+          this.LocalSearchContent()
+        } else {
+          this.PixivSearchContent()
+        }
       }
+      .width('100%')
+      .height('100%')
+      .backgroundColor(this.getColors().pageBg)
+      // 点击背景时关闭历史面板
+      .onClick((): void => {
+        if (this.showHistory) {
+          this.showHistory = false;
+        }
+      })
+
+      // ── 历史记录浮动面板（覆盖在内容上方）──
+      if (this.showHistory && this.historyList.length > 0) {
+        this.HistoryPanel()
+      }
+
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(this.getColors().pageBg)
   }
 
   // ----------------------------------------
-  // 搜索源切换 Tab
+  // 新版搜索栏：TextInput + 搜索按钮
+  // ----------------------------------------
+
+  @Builder SearchBar() {
+    Row() {
+      // 搜索输入框
+      TextInput({
+        text: this.inputValue,
+        placeholder: this.searchSource === SearchSource.LOCAL
+          ? '输入标题、作者或ID搜索...'
+          : '搜索 Pixiv 小说标题、作者或标签...'
+      })
+        .layoutWeight(1)
+        .height(40)
+        .borderRadius(20)
+        .backgroundColor(this.getColors().searchBg)
+        .placeholderColor(this.getColors().tertiaryText)
+        .fontColor(this.getColors().primaryText)
+        .fontSize(14)
+        .padding({ left: 16, right: 16 })
+        // 实时更新输入值（不触发搜索）
+        .onChange((value: string): void => {
+          this.inputValue = value;
+          // 输入变化时保持历史面板可见（如果当前聚焦状态）
+        })
+        // 聚焦时展示历史记录
+        .onFocus((): void => {
+          this.historyList = SearchHistoryManager.getHistory();
+          if (this.historyList.length > 0) {
+            this.showHistory = true;
+          }
+        })
+        // 键盘回车确认搜索
+        .onSubmit((): void => {
+          this.showHistory = false;
+          this.triggerSearch(this.inputValue);
+        })
+
+      // 搜索按钮
+      Button('搜索')
+        .height(40)
+        .borderRadius(20)
+        .fontSize(14)
+        .fontColor('#FFFFFF')
+        .backgroundColor(this.getColors().accentText)
+        .padding({ left: 20, right: 20 })
+        .margin({ left: 8 })
+        .onClick((): void => {
+          this.showHistory = false;
+          this.triggerSearch(this.inputValue);
+        })
+    }
+    .width('92%')
+    .alignSelf(ItemAlign.Center)
+    .margin({ left: '4%', right: '4%' })
+  }
+
+  // ----------------------------------------
+  // 历史记录浮动面板
+  // ----------------------------------------
+
+  @Builder HistoryPanel() {
+    Column() {
+      // 面板头：标题 + 清空按钮
+      Row() {
+        Row() {
+          Text('🕐')
+            .fontSize(13)
+          Text(' 搜索历史')
+            .fontSize(13)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.getColors().secondaryText)
+        }
+
+        Blank()
+
+        // 清空按钮
+        Text('清空')
+          .fontSize(12)
+          .fontColor(this.getColors().historyDeleteText)
+          .onClick((): void => {
+            this.clearAllHistory();
+            this.showHistory = false;
+          })
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 10, bottom: 6 })
+
+      // 分割线
+      Divider()
+        .color(this.getColors().divider)
+        .strokeWidth(0.5)
+        .margin({ left: 16, right: 16 })
+
+      // 历史记录列表（最多显示 MAX_HISTORY 条）
+      List() {
+        ForEach(this.historyList, (keyword: string): void => {
+          ListItem() {
+            Row() {
+              // 历史图标
+              Text('🔍')
+                .fontSize(13)
+                .margin({ right: 10 })
+
+              // 关键词（点击填入并搜索）
+              Text(keyword)
+                .fontSize(14)
+                .fontColor(this.getColors().primaryText)
+                .layoutWeight(1)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .onClick((): void => {
+                  this.selectHistory(keyword);
+                })
+
+              // 删除单条按钮
+              Text('✕')
+                .fontSize(13)
+                .fontColor(this.getColors().historyDeleteText)
+                .padding({ left: 12, top: 4, bottom: 4 })
+                .onClick((): void => {
+                  this.deleteHistoryItem(keyword);
+                  // 删完后如果历史为空则关闭面板
+                  if (this.historyList.length === 0) {
+                    this.showHistory = false;
+                  }
+                })
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 11, bottom: 11 })
+            .backgroundColor(this.getColors().historyPanelBg)
+          }
+        }, (keyword: string): string => keyword)
+      }
+      .width('100%')
+      .constraintSize({ maxHeight: 280 }) // 最高 280vp，超出可滚动
+      .divider({
+        strokeWidth: 0.5,
+        color: this.getColors().divider,
+        startMargin: 16,
+        endMargin: 16
+      })
+    }
+    .width('92%')
+    .backgroundColor(this.getColors().historyPanelBg)
+    .borderRadius(12)
+    .shadow({ radius: 16, color: '#00000022', offsetY: 4 })
+    // 定位：紧贴搜索栏下方
+    // statusBarHeight(px) + 标题区(约52vp) + 搜索栏高度(40vp) + 间距
+    .position({
+      x: '4%',
+      y: px2vp(this.statusBarHeight) + 52 + 40 + 8
+    })
+    .zIndex(999)
+    // 阻止点击面板时关闭（不冒泡到外层 Column）
+    .onClick((): void => {})
+  }
+
+  // ----------------------------------------
+  // 搜索源切换 Tab（原有逻辑，仅去掉切换时的立即搜索）
   // ----------------------------------------
 
   @Builder SearchSourceToggle() {
@@ -518,12 +718,13 @@ export struct SearchPage {
         .onClick((): void => {
           if (this.searchSource !== SearchSource.LOCAL) {
             this.searchSource = SearchSource.LOCAL
+            // 切换时用当前已搜索的 keyword 刷新本地结果
             this.doLocalSearch(this.searchKey)
           }
         })
 
       // Pixiv 小说
-      Text('Pixiv 小说')
+      Text('✨ Pixiv 小说')
         .fontSize(13)
         .fontWeight(this.searchSource === SearchSource.PIXIV
           ? FontWeight.Bold : FontWeight.Normal)
@@ -539,6 +740,7 @@ export struct SearchPage {
         .onClick((): void => {
           if (this.searchSource !== SearchSource.PIXIV) {
             this.searchSource = SearchSource.PIXIV
+            // 切换时加载离线缓存列表（不发联网请求）
             this.doPixivSearch(this.searchKey, 1)
           }
         })
@@ -567,7 +769,8 @@ export struct SearchPage {
             .fontColor(this.getColors().btnText)
             .backgroundColor(Color.Transparent)
             .onClick((): void => {
-              this.searchKey = ""
+              this.inputValue = ""
+              this.searchKey  = ""
               this.doSearch("")
             })
         }
@@ -595,7 +798,7 @@ export struct SearchPage {
         Text('🔍')
           .fontSize(60)
           .margin({ bottom: 16 })
-        Text(this.searchKey ? '未找到相关结果' : '输入关键词开始搜索')
+        Text(this.searchKey ? '未找到相关结果' : '输入关键词后点击搜索')
           .fontSize(16)
           .fontColor(this.getColors().emptyText)
         if (this.searchKey) {
@@ -609,8 +812,17 @@ export struct SearchPage {
     }
   }
 
+  // 补全 doSearch（供清除按钮使用）
+  private doSearch(keyword: string): void {
+    if (this.searchSource === SearchSource.LOCAL) {
+      this.doLocalSearch(keyword)
+    } else {
+      this.doPixivSearch(keyword, 1)
+    }
+  }
+
   // ----------------------------------------
-  // Pixiv 搜索内容区（新增）
+  // Pixiv 搜索内容区（原有逻辑，完全不变）
   // ----------------------------------------
 
   @Builder PixivSearchContent() {
@@ -625,7 +837,6 @@ export struct SearchPage {
 
         Blank()
 
-        // 有离线缓存结果时显示错误提示（不遮挡列表）
         if (this.pixivErrorMsg && this.pixivResults.length > 0) {
           Text('⚠️ 网络异常，显示缓存')
             .fontSize(11)
@@ -638,7 +849,8 @@ export struct SearchPage {
             .fontColor(this.getColors().btnText)
             .backgroundColor(Color.Transparent)
             .onClick((): void => {
-              this.searchKey = ""
+              this.inputValue = ""
+              this.searchKey  = ""
               this.doPixivSearch("", 1)
             })
         }
@@ -665,7 +877,6 @@ export struct SearchPage {
     // 结果列表
     else if (this.pixivResults.length > 0) {
       List({ space: 10 }) {
-        // 小说卡片列表
         ForEach(this.pixivResults, (novel: PixivNovel): void => {
           ListItem() {
             this.PixivNovelCard(novel)
@@ -677,9 +888,7 @@ export struct SearchPage {
         ListItem() {
           if (this.pixivHasMore) {
             Button(this.isPixivSearching ? '加载中...' : '加载更多')
-              .width('100%')
-              .height(44)
-              .fontSize(14)
+              .width('100%').height(44).fontSize(14)
               .fontColor(this.getColors().btnText)
               .backgroundColor(this.getColors().cardBg)
               .borderRadius(12)
@@ -689,8 +898,7 @@ export struct SearchPage {
             Text('— 已加载全部结果 —')
               .fontSize(12)
               .fontColor(this.getColors().tertiaryText)
-              .width('100%')
-              .textAlign(TextAlign.Center)
+              .width('100%').textAlign(TextAlign.Center)
               .padding({ top: 8, bottom: 8 })
           }
         }
@@ -709,7 +917,7 @@ export struct SearchPage {
           .margin({ bottom: 16 })
         Text(this.searchKey
           ? (this.pixivErrorMsg ? '网络错误，无法搜索' : '未找到相关结果')
-          : '搜索 Pixiv 小说，或查看离线缓存')
+          : '输入关键词后点击搜索，或查看离线缓存')
           .fontSize(16)
           .fontColor(this.getColors().emptyText)
         Text(this.searchKey
@@ -726,74 +934,48 @@ export struct SearchPage {
   }
 
   // ----------------------------------------
-  // Pixiv 小说卡片（新增）
+  // Pixiv 小说卡片（完全不变）
   // ----------------------------------------
 
   @Builder PixivNovelCard(novel: PixivNovel) {
     Column() {
-      // 第一行：标题 + 缓存状态徽章
       Row() {
-        // 系列标签（有系列时显示）
         if (novel.series) {
           Text(`[${novel.series.title}]`)
-            .fontSize(11)
-            .fontColor(this.getColors().accentText)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .constraintSize({ maxWidth: '40%' })
-            .margin({ right: 6 })
+            .fontSize(11).fontColor(this.getColors().accentText)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .constraintSize({ maxWidth: '40%' }).margin({ right: 6 })
         }
-
         Text(novel.title)
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
+          .fontSize(15).fontWeight(FontWeight.Medium)
           .fontColor(this.getColors().primaryText)
-          .layoutWeight(1)
-          .maxLines(2)
+          .layoutWeight(1).maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-        // 缓存状态徽章
         this.CacheStatusBadge(novel.cacheStatus)
       }
-      .width('100%')
-      .alignItems(VerticalAlign.Top)
+      .width('100%').alignItems(VerticalAlign.Top)
 
-      // 第二行：作者 + 字数 + 日期
       Row() {
         Text(novel.author)
-          .fontSize(12)
-          .fontColor(this.getColors().secondaryText)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontSize(12).fontColor(this.getColors().secondaryText)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           .constraintSize({ maxWidth: '50%' })
-
         Text(' · ' + formatTextLength(novel.textLength))
-          .fontSize(12)
-          .fontColor(this.getColors().tertiaryText)
-
+          .fontSize(12).fontColor(this.getColors().tertiaryText)
         Text(' · ' + formatPixivDate(novel.createDate))
-          .fontSize(12)
-          .fontColor(this.getColors().tertiaryText)
-
+          .fontSize(12).fontColor(this.getColors().tertiaryText)
         Blank()
-
-        // 收藏数
         Text('♥ ' + novel.bookmarkCount)
-          .fontSize(11)
-          .fontColor(this.getColors().tertiaryText)
+          .fontSize(11).fontColor(this.getColors().tertiaryText)
       }
-      .width('100%')
-      .margin({ top: 6 })
+      .width('100%').margin({ top: 6 })
 
-      // 第三行：标签
       if (novel.tags.length > 0) {
         Flex({ wrap: FlexWrap.Wrap, direction: FlexDirection.Row }) {
           ForEach(novel.tags.slice(0, 5), (tag: PixivTag): void => {
             Text('#' + (tag.translation ?? tag.name))
-              .fontSize(11)
-              .fontColor(this.getColors().tagText)
-              .backgroundColor(this.getColors().tagBg)
-              .borderRadius(4)
+              .fontSize(11).fontColor(this.getColors().tagText)
+              .backgroundColor(this.getColors().tagBg).borderRadius(4)
               .padding({ left: 6, right: 6, top: 3, bottom: 3 })
               .margin({ right: 6, top: 6 })
           })
@@ -801,101 +983,69 @@ export struct SearchPage {
         .width('100%')
       }
 
-      // 第四行：操作按钮
       Row() {
         Blank()
-
-        // ⬇️ 新增：删除缓存按钮（仅已缓存时显示）
         if (novel.cacheStatus === CacheStatus.CACHED) {
           Button('删除缓存')
-            .fontSize(12)
-            .fontColor('#FF4D4F')
+            .fontSize(12).fontColor('#FF4D4F')
             .backgroundColor(this.getColors().searchBg)
-            .borderRadius(8)
-            .height(32)
-            .padding({ left: 12, right: 12 })
+            .borderRadius(8).height(32).padding({ left: 12, right: 12 })
             .onClick((): void => { this.deleteCache(novel) })
         }
-
-        // 缓存/重试按钮
         if (novel.cacheStatus === CacheStatus.NOT_CACHED ||
           novel.cacheStatus === CacheStatus.CACHE_FAIL) {
           Button(novel.cacheStatus === CacheStatus.CACHE_FAIL ? '重试缓存' : '离线缓存')
             .fontSize(12)
-            .fontColor(novel.cacheStatus === CacheStatus.CACHE_FAIL ? '#FF4D4F' : this.getColors().btnText)
+            .fontColor(novel.cacheStatus === CacheStatus.CACHE_FAIL
+              ? '#FF4D4F' : this.getColors().btnText)
             .backgroundColor(this.getColors().searchBg)
-            .borderRadius(8)
-            .height(32)
-            .padding({ left: 12, right: 12 })
+            .borderRadius(8).height(32).padding({ left: 12, right: 12 })
             .onClick((): void => { this.cacheNovel(novel) })
         }
-
-        // 缓存中：禁用按钮 + 转圈
         if (novel.cacheStatus === CacheStatus.CACHING) {
           Row() {
-            LoadingProgress()
-              .width(16).height(16)
-              .color(this.getColors().accentText)
-            Text(' 缓存中')
-              .fontSize(12)
-              .fontColor(this.getColors().secondaryText)
+            LoadingProgress().width(16).height(16).color(this.getColors().accentText)
+            Text(' 缓存中').fontSize(12).fontColor(this.getColors().secondaryText)
           }
           .backgroundColor(this.getColors().searchBg)
-          .borderRadius(8)
-          .height(32)
-          .padding({ left: 12, right: 12 })
+          .borderRadius(8).height(32).padding({ left: 12, right: 12 })
         }
-
-        // 离线阅读按钮（已缓存时才显示）
         if (isReadableOffline(novel)) {
           Button('离线阅读')
-            .fontSize(12)
-            .fontColor('#52C41A')
+            .fontSize(12).fontColor('#52C41A')
             .backgroundColor(this.getColors().cachedBadgeBg)
-            .borderRadius(8)
-            .height(32)
-            .padding({ left: 12, right: 12 })
+            .borderRadius(8).height(32).padding({ left: 12, right: 12 })
             .margin({ left: 8 })
             .onClick((): void => { this.openOfflineReader(novel) })
         }
-
-        // 在线阅读（WebView）
         Button('在线阅读')
-          .fontSize(12)
-          .fontColor(this.getColors().btnText)
+          .fontSize(12).fontColor(this.getColors().btnText)
           .backgroundColor(this.getColors().searchBg)
-          .borderRadius(8)
-          .height(32)
-          .padding({ left: 12, right: 12 })
+          .borderRadius(8).height(32).padding({ left: 12, right: 12 })
           .margin({ left: 8 })
           .onClick((): void => { this.openOnlineReader(novel) })
       }
-      .width('100%')
-      .margin({ top: 10 })
+      .width('100%').margin({ top: 10 })
     }
-    .width('100%')
-    .padding(14)
-    .backgroundColor(this.getColors().cardBg)
-    .borderRadius(12)
+    .width('100%').padding(14)
+    .backgroundColor(this.getColors().cardBg).borderRadius(12)
   }
 
   // ----------------------------------------
-  // 缓存状态徽章（小组件）
+  // 缓存状态徽章（不变）
   // ----------------------------------------
+
   @Builder CacheStatusBadge(status: CacheStatus) {
     if (status !== CacheStatus.NOT_CACHED) {
       Text(getCacheStatusDisplay(status).label)
-        .fontSize(10)
-        .fontColor(getCacheStatusDisplay(status).color)
+        .fontSize(10).fontColor(getCacheStatusDisplay(status).color)
         .backgroundColor(
           status === CacheStatus.CACHED  ? this.getColors().cachedBadgeBg  :
             status === CacheStatus.CACHING ? this.getColors().cachingBadgeBg :
               this.getColors().failBadgeBg
         )
-        .borderRadius(4)
-        .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-        .margin({ left: 6 })
-        .flexShrink(0)
+        .borderRadius(4).padding({ left: 6, right: 6, top: 2, bottom: 2 })
+        .margin({ left: 6 }).flexShrink(0)
     } else {
       Blank()
     }
@@ -911,16 +1061,12 @@ export struct SearchPage {
         Row() {
           if (item.watchMarks && item.watchMarks.length > 0) {
             Text(item.watchMarks)
-              .fontSize(12)
-              .fontColor(this.getColors().accentText)
-              .margin({ right: 6 })
+              .fontSize(12).fontColor(this.getColors().accentText).margin({ right: 6 })
           }
           Text(item.title)
-            .fontSize(16)
-            .fontWeight(FontWeight.Medium)
+            .fontSize(16).fontWeight(FontWeight.Medium)
             .fontColor(this.getColors().primaryText)
-            .layoutWeight(1)
-            .maxLines(1)
+            .layoutWeight(1).maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
         .width('100%')
@@ -929,28 +1075,21 @@ export struct SearchPage {
           Text(item.author)
             .fontSize(12)
             .fontColor(this.crawler?.isWatchedAuthor(item.author)
-              ? this.getColors().watchedAuthor
-              : this.getColors().normalAuthor)
+              ? this.getColors().watchedAuthor : this.getColors().normalAuthor)
             .fontWeight(this.crawler?.isWatchedAuthor(item.author)
-              ? FontWeight.Bold
-              : FontWeight.Normal)
+              ? FontWeight.Bold : FontWeight.Normal)
           Text(' · ' + item.lastTime)
-            .fontSize(12)
-            .fontColor(this.getColors().tertiaryText)
+            .fontSize(12).fontColor(this.getColors().tertiaryText)
         }
         .margin({ top: 4 })
       }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1).alignItems(HorizontalAlign.Start)
 
       Text('查看')
-        .fontSize(14)
-        .fontColor(this.getColors().btnText)
+        .fontSize(14).fontColor(this.getColors().btnText)
     }
-    .width('100%')
-    .padding(16)
-    .backgroundColor(this.getColors().cardBg)
-    .borderRadius(12)
+    .width('100%').padding(16)
+    .backgroundColor(this.getColors().cardBg).borderRadius(12)
     .onClick((): void => {
       router.pushUrl({
         url: 'pages/DetailPage',
