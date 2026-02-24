@@ -6,7 +6,8 @@
 
 export enum SearchSource {
   LOCAL = 'local',   // 本地书库（现有逻辑）
-  PIXIV = 'pixiv'    // Pixiv 小说
+  PIXIV = 'pixiv',    // Pixiv 小说
+  PIXIV_FOLLOWING  = 'pixiv_following' //  关注用户最新小说
 }
 
 // ========================================

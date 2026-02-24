@@ -54,6 +54,26 @@ interface TagTranslation {
   zh?: string;
 }
 
+// ========================================
+// 新增：关注用户最新小说动态
+// ========================================
+
+// 关注动态接口返回的 body 结构
+// （定义在文件顶部，与其他 interface 并列）
+interface FollowingNovelPage {
+  ids:    number[];  // 当前页小说 ID 列表
+  total:  number;    // 总数
+}
+
+interface FollowingNovelThumbnails {
+  novel: object[];   // 与搜索接口格式相同的原始小说列表
+}
+
+interface FollowingNovelBody {
+  page: FollowingNovelPage;
+  thumbnails: FollowingNovelThumbnails;
+}
+
 interface TagItem {
   tag:         string;
   translation?: TagTranslation;
@@ -237,19 +257,21 @@ export class PixivService {
       author:        b.userName,
       authorId:      b.userId,
       coverUrl:      b.coverUrl ?? '',
-      tags:          (b.tags?.tags ?? []).map(t => ({
-        name:        t.tag,
-        translation: t.translation?.zh ?? t.translation?.en ?? undefined
-      } as PixivTag)),
+      tags:          (b.tags?.tags ?? []).map(t => {
+        return {
+          name:        t.tag,
+          translation: t.translation?.zh ?? t.translation?.en ?? undefined
+        } as PixivTag;
+      }),
       textLength:    b.wordCount  ?? 0,
       pageCount:     b.pageCount  ?? 1,
       createDate:    b.createDate ?? '',
       updateDate:    b.uploadDate ?? '',
-      series: b.seriesNavData ? {
+      series: b.seriesNavData ? ({
         id:    String(b.seriesNavData.seriesId),
         title: b.seriesNavData.title,
         order: b.seriesNavData.order
-      } as PixivSeries : undefined,
+      } as PixivSeries) : undefined,
       bookmarkCount: b.bookmarkCount ?? 0,
       viewCount:     b.viewCount     ?? 0,
       commentCount:  b.commentCount  ?? 0,
@@ -259,6 +281,55 @@ export class PixivService {
 
     return { success: true, data: novel };
   }
+
+  /**
+   * 获取关注用户的最新小说动态
+   * 对应 Pixiv 站内 「以关注用户の新着小説」 页面
+   * API: /ajax/follow_latest/novel?mode=all&p={page}&lang=zh
+   *
+   * @param page  页码（从 1 开始），每页 60 条
+   * @returns     与 searchNovels 格式完全一致的 ServiceResult<PixivSearchResult>
+   */
+  async fetchFollowingNovels(page: number = 1): Promise<ServiceResult<PixivSearchResult>> {
+    const url =
+      `${AJAX_BASE}/follow_latest/novel` +
+        `?mode=all` +
+        `&p=${page}` +
+        `&lang=zh`;
+
+    const resp = await this.get<PixivAjaxResponse<FollowingNovelBody>>(url, TIMEOUT_SEARCH);
+
+    if (!resp.success || !resp.data) {
+      return { success: false, error: resp.error, code: resp.code };
+    }
+    if (resp.data.error) {
+      return {
+        success: false,
+        error: this.translatePixivError(resp.data.message)
+      };
+    }
+
+    const body    = resp.data.body;
+    const rawList = body?.thumbnails?.novel ?? [];
+    const total   = body?.page?.total       ?? 0;
+
+    const novels: PixivNovel[] = rawList.map(
+      (raw: object) => parsePixivNovelFromRaw(raw as RawPixivNovelItem)
+    );
+
+    return {
+      success: true,
+      data: {
+        novels,
+        total,
+        currentPage: page,
+        hasMore:     page * PAGE_SIZE < total,
+        keyword:     ''   // 关注动态无关键词概念
+      }
+    };
+  }
+
+
 
   /**
    * 构造 Pixiv 小说阅读页 URL（WebView 打开）
