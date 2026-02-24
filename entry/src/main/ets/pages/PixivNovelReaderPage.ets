@@ -3,22 +3,18 @@
 import router from '@ohos.router';
 import web_webview from '@ohos.web.webview';
 import promptAction from '@ohos.promptAction';
-import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
 import common from '@ohos.app.ability.common';
 import { pixivCacheDB } from '../database/PixivCacheDB';
-import util from '@ohos.util';
-import fs from '@ohos.file.fs';
 
 // ========================================
 // 路由参数类型
 // ========================================
 
 interface ReaderRouterParams {
-  novelId:    string;
-  title:      string;
-  author:     string;
-  offline:    boolean;     // true = 离线渲染，false = WebView 在线
-       // offline=true 时传入正文
+  novelId: string;
+  title:   string;
+  author:  string;
+  offline: boolean;
 }
 
 // ========================================
@@ -34,12 +30,14 @@ interface ReaderColors {
   divider:       string;
   iconBtnBg:     string;
   iconBtnText:   string;
+  chapterColor:  string;
+  hrColor:       string;
 }
 
 function getReaderColors(mode: number): ReaderColors {
   const isDark = mode === 0;
   return {
-    pageBg:        isDark ? '#0D0D0D' : '#F1F3F5',
+    pageBg:        isDark ? '#0D0D0D' : '#F9F7F2',
     headerBg:      isDark ? '#141414' : '#FFFFFF',
     primaryText:   isDark ? '#E6E6E6' : '#1A1A1A',
     secondaryText: isDark ? '#888888' : '#666666',
@@ -47,99 +45,95 @@ function getReaderColors(mode: number): ReaderColors {
     divider:       isDark ? '#2A2A2A' : '#E5E5E5',
     iconBtnBg:     isDark ? '#2A2A2A' : '#F0F0F0',
     iconBtnText:   isDark ? '#CCCCCC' : '#444444',
+    chapterColor:  isDark ? '#AADDFF' : '#0055AA',
+    hrColor:       isDark ? '#333333' : '#DDDDDD',
   };
 }
 
 // ========================================
-// Pixiv 正文标记解析
+// ★ 新增：离线正文解析为"段落块"结构
 // ========================================
 
-// Pixiv 小说正文特殊标记处理器
-function parsePixivContent(raw: string, isDark: boolean): string {
-  if (!raw) return '';
+// 每个段落块的类型
+type BlockType = 'paragraph' | 'chapter' | 'hr' | 'blank';
 
-  const textColor    = isDark ? '#E6E6E6' : '#1A1A1A';
-  const bgColor      = isDark ? '#0D0D0D' : '#F9F7F2';
-  const chapterColor = isDark ? '#AADDFF' : '#0055AA';
-  const hrColor      = isDark ? '#333333' : '#DDDDDD';
-  const rubyColor    = isDark ? '#AAAAAA' : '#888888';
-
-  let content = raw
-  // 分页符 → 水平分割线
-    .replace(/\[newpage\]/g,
-      `<div class="page-break"><hr style="border:none;border-top:1px solid ${hrColor};margin:32px 0;"/></div>`)
-
-    // 章节标题 [chapter:xxx]
-    .replace(/\[chapter:(.*?)\]/g,
-      `<h2 style="color:${chapterColor};font-size:1.15em;font-weight:bold;
-        margin:28px 0 14px;padding-left:10px;
-        border-left:3px solid ${chapterColor};">$1</h2>`)
-
-    // 傍点强调 [[rb:文字>注音]]
-    .replace(/\[\[rb:(.*?)>(.*?)\]\]/g,
-      `<ruby>$1<rt style="color:${rubyColor};font-size:0.6em;">$2</rt></ruby>`)
-
-    // 粗体 [b]...[/b]
-    .replace(/\[b\]([\s\S]*?)\[\/b\]/g,
-      `<strong>$1</strong>`)
-
-    // 斜体 [i]...[/i]
-    .replace(/\[i\]([\s\S]*?)\[\/i\]/g,
-      `<em>$1</em>`)
-
-    // 链接 [jump:xxx]
-    .replace(/\[jump:(.*?)\]/g, '')
-
-    // 换行
-    .replace(/\n/g, '<br/>');
-
-  return `<!DOCTYPE html>
-<html lang="zh">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=yes"/>
-  <title>阅读</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      background-color: ${bgColor};
-      color: ${textColor};
-      font-family: "Noto Serif CJK SC", "Source Han Serif CN",
-                   "PingFang SC", serif;
-      font-size: 18px;
-      line-height: 1.9;
-      padding: 20px 20px 60px;
-      word-break: break-all;
-      -webkit-text-size-adjust: 100%;
-    }
-
-    /* 段落间距 */
-    br + br { display: block; content: ''; margin-top: 0.5em; }
-
-    /* 章节标题已内联样式，此处备用 */
-    h2 { line-height: 1.4; }
-
-    /* 分页符容器 */
-    .page-break { margin: 24px 0; }
-
-    /* 选中文字颜色 */
-    ::selection { background: #007DFF44; }
-
-    /* 滚动条（WebView 内） */
-    ::-webkit-scrollbar { width: 4px; }
-    ::-webkit-scrollbar-thumb {
-      background: ${isDark ? '#444' : '#CCC'};
-      border-radius: 2px;
-    }
-  </style>
-</head>
-<body>
-  ${content}
-</body>
-</html>`;
+// 段落块数据结构
+interface ContentBlock {
+  type:    BlockType;
+  text:    string;   // paragraph / chapter 时有值，其余为空
+  bold:    boolean;  // 段内是否有粗体（简化处理：整段判断）
+  italic:  boolean;  // 段内是否有斜体
 }
 
+/**
+ * 把 Pixiv 原始正文解析成段落块列表
+ * 完全替代原来的 parsePixivContent → HTML 方案
+ */
+function parsePixivBlocks(raw: string): ContentBlock[] {
+  if (!raw) return [];
+
+  const blocks: ContentBlock[] = [];
+
+  // 先按换行切割成行
+  const lines = raw.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // 空行 → 空白块（起间距作用）
+    if (!trimmed) {
+      blocks.push({ type: 'blank', text: '', bold: false, italic: false });
+      continue;
+    }
+
+    // 分页符 → 水平线块
+    if (trimmed === '[newpage]') {
+      blocks.push({ type: 'hr', text: '', bold: false, italic: false });
+      continue;
+    }
+
+    // 章节标题 [chapter:xxx]
+    const chapterMatch = trimmed.match(/^\[chapter:(.*?)\]$/);
+    if (chapterMatch) {
+      blocks.push({
+        type:   'chapter',
+        text:   chapterMatch[1],
+        bold:   false,
+        italic: false
+      });
+      continue;
+    }
+
+    // 普通段落：去掉 Pixiv 标记，保留文字
+    let text = trimmed
+    // 傍点注音 [[rb:文字>注音]] → 只保留文字
+      .replace(/\[\[rb:(.*?)>(.*?)\]\]/g, '$1')
+      // 粗体 [b]...[/b]
+      .replace(/\[b\]([\s\S]*?)\[\/b\]/g, '$1')
+      // 斜体 [i]...[/i]
+      .replace(/\[i\]([\s\S]*?)\[\/i\]/g, '$1')
+      // 链接跳转（直接丢弃）
+      .replace(/\[jump:(.*?)\]/g, '')
+      // 其他未知标记（保险兜底）
+      .replace(/\[[^\]]*\]/g, '');
+
+    if (!text.trim()) continue;
+
+    // 简化判断：整段含 [b] 原始标记则标记 bold，含 [i] 则标记 italic
+    // （因为已经 replace 处理完了，这里检测原始 line）
+    const hasBold   = /\[b\]/.test(line);
+    const hasItalic = /\[i\]/.test(line);
+
+    blocks.push({
+      type:   'paragraph',
+      text:   text,
+      bold:   hasBold,
+      italic: hasItalic,
+    });
+  }
+
+  return blocks;
+}
 
 // ========================================
 // 页面主体
@@ -152,105 +146,61 @@ struct PixivNovelReaderPage {
   // ── 路由参数 ──
   private params: ReaderRouterParams | null = null;
 
-  // ✅ 新增：用 @State 存需要在 build() 里用到的路由参数
+  // ── 核心状态 ──
   @State private offlineMode:  boolean = false;
-  @State @Watch('onCachedTextReady') private cachedText: string = '';
-  @State private isOfflineReady: boolean = false; // 新增：控制 WebView 是否渲染
   @State private novelTitle:   string  = '小说阅读';
   @State private novelAuthor:  string  = '';
+  @State private colorMode:    number  = 0;
 
-  // ── WebView 控制器 ──
+  // ── ★ 离线模式：解析后的段落块列表（替代 cachedText + WebView）──
+  @State private contentBlocks: ContentBlock[] = [];
+  @State private isLoading:     boolean = true;   // 离线：读 DB 中 / 在线：WebView 加载中
+
+  // ── 字号（离线/在线共用）──
+  @State private fontSize:      number  = 18;
+  @State private showFontPanel: boolean = false;
+
+  // ── 在线模式专用 ──
+  @State private novelUrl:     string  = '';
+  @State private loadProgress: number  = 0;
   private webController: web_webview.WebviewController =
     new web_webview.WebviewController();
-
-  private onCachedTextReady(): void {
-    const TAG = '[PixivReader][onCachedTextReady]';
-    if (!this.cachedText) return;
-    this.isOfflineReady = true;
-    if (this.isControllerReady) {
-      console.info(`${TAG} 控制器已就绪，写文件并 loadUrl`);
-      this.loadOfflineHtmlFile();
-    }
-  }
-
-  // ── 状态 ──
-  @State colorMode:      number  = 0;
-  @State isPageLoading:  boolean = true;   // WebView 加载中
-  @State loadProgress:   number  = 0;      // WebView 加载进度 0~100
-  @State showFontPanel:  boolean = false;  // 字体调节面板
-  @State fontSize:       number  = 18;     // 当前字号（px）
+  @State private isControllerReady: boolean = false;
 
   // ── 安全区 ──
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
   // ── 颜色模式监听 ──
-  private configCallbackId: number = -1;
+  private configCallbackId:      number    = -1;
   private configChangeCallback: () => void = () => {};
-
-  private async loadCachedTextFromDB(novelId: string): Promise<void> {
-    const TAG = '[PixivReader][loadCachedTextFromDB]';
-    console.info(`${TAG} 开始读取，novelId=${novelId}`);
-
-    const ctx = getContext(this) as common.UIAbilityContext;
-
-    console.info(`${TAG} 调用 pixivCacheDB.init ...`);
-    await pixivCacheDB.init(ctx);
-    await pixivCacheDB.debugGetNovelRaw(novelId);
-    console.info(`${TAG} pixivCacheDB.init 完成`);
-
-    const text = await pixivCacheDB.getFullText(novelId);
-    console.info(`${TAG} getFullText 返回: ${text ? '有内容，长度=' + text.length : 'null/空'}`);
-
-    if (!text) {
-      console.error(`${TAG} ❌ 正文为空！novelId=${novelId} 未缓存或 cache_status 不是 CACHED`);
-      promptAction.showToast({ message: '缓存内容丢失，请重新缓存' });
-      router.back();
-      return;
-    }
-
-    console.info(`${TAG} ✅ 即将赋值 cachedText，长度=${text.length}`);
-    this.cachedText = text;
-  }
 
   // ========================================
   // 生命周期
   // ========================================
+
   aboutToAppear(): void {
     const TAG = '[PixivReader][aboutToAppear]';
     const ctx = getContext(this) as common.UIAbilityContext;
-    this.colorMode = ctx.config?.colorMode ?? 0;
-    this.params = router.getParams() as ReaderRouterParams;
 
-    // ✅ 赋值到 @State 字段，触发重渲染
-    this.offlineMode  = this.params?.offline === true || String(this.params?.offline) === 'true';
+    this.colorMode  = ctx.config?.colorMode ?? 0;
+    this.params     = router.getParams() as ReaderRouterParams;
+    this.offlineMode = this.params?.offline === true ||
+      String(this.params?.offline) === 'true';
+    this.novelTitle  = this.params?.title  ?? '小说阅读';
+    this.novelAuthor = this.params?.author ?? '';
 
-    this.novelTitle   = this.params?.title  ?? '小说阅读';
-    this.novelAuthor  = this.params?.author ?? '';
+    console.info(`${TAG} offline=${this.offlineMode} novelId=${this.params?.novelId}`);
 
     if (this.offlineMode && this.params?.novelId) {
-      // ✅ 从 DB 读，不从路由参数读
-      this.loadCachedTextFromDB(this.params.novelId);
-    }
-
-    console.info(`${TAG} params = ${JSON.stringify(this.params)}`);
-    console.info(`${TAG} offline = ${this.params?.offline}, novelId = ${this.params?.novelId}`);
-
-    // 如果是在线模式，预先构造好 URL
-    if (this.params && !this.params.offline) {
-      const id = this.params.novelId;
-      console.info(`${TAG} 在线模式，novelId=${id}`);
-      if (id) {
-        this.novelUrl = `https://www.pixiv.net/novel/show.php?id=${id}`;
-        console.info(`${TAG} 构造 novelUrl = ${this.novelUrl}`);
-      } else {
-        console.error(`${TAG} ❌ novelId 为空，无法构造 URL`);
-        promptAction.showToast({ message: '小说ID无效' });
-      }
-
-      // ✅ 提前注入一次 Cookie（WebCookieManager 是全局的，不依赖 WebView 实例）
+      // ★ 离线：从 DB 读正文 → 解析成段落块
+      this.loadOfflineContent(this.params.novelId);
+    } else if (this.params?.novelId) {
+      // 在线：构造 URL
+      this.novelUrl = `https://www.pixiv.net/novel/show.php?id=${this.params.novelId}`;
       this.injectCookie();
     }
 
+    // 监听深色/浅色模式变化
     this.configChangeCallback = () => {
       this.colorMode = ctx.config?.colorMode ?? 0;
     };
@@ -258,13 +208,44 @@ struct PixivNovelReaderPage {
       onConfigurationUpdated: this.configChangeCallback,
       onMemoryLevel: (_level: number) => {}
     });
-
   }
 
   aboutToDisappear(): void {
     const ctx = getContext(this) as common.UIAbilityContext;
     if (this.configCallbackId !== -1) {
       ctx.getApplicationContext().off('environment', this.configCallbackId);
+    }
+  }
+
+  // ========================================
+  // ★ 核心：离线内容加载（DB → 解析 → 渲染）
+  // ========================================
+
+  private async loadOfflineContent(novelId: string): Promise<void> {
+    const TAG = '[PixivReader][loadOfflineContent]';
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      await pixivCacheDB.init(ctx);
+
+      const text = await pixivCacheDB.getFullText(novelId);
+      console.info(`${TAG} getFullText: ${text ? '长度=' + text.length : 'null'}`);
+
+      if (!text) {
+        promptAction.showToast({ message: '缓存内容丢失，请重新缓存' });
+        router.back();
+        return;
+      }
+
+      // ★ 解析成段落块，赋值触发重渲染
+      this.contentBlocks = parsePixivBlocks(text);
+      console.info(`${TAG} 解析完成，共 ${this.contentBlocks.length} 个块`);
+
+    } catch (e) {
+      console.error(`${TAG} 失败: ${JSON.stringify(e)}`);
+      promptAction.showToast({ message: '加载失败，请重试' });
+    } finally {
+      // 无论成功与否都关闭 loading
+      this.isLoading = false;
     }
   }
 
@@ -280,8 +261,23 @@ struct PixivNovelReaderPage {
     return this.colorMode === 0;
   }
 
-  // 字号注入（离线 WebView 动态调整）
+  // 在线模式：WebView 注入 Cookie
+  private injectCookie(): void {
+    try {
+      const session = AppStorage.get<string>('pixivSessionId') ?? '';
+      if (!session.trim()) return;
+      web_webview.WebCookieManager.configCookieSync(
+        'https://www.pixiv.net',
+        `PHPSESSID=${session.trim()}`
+      );
+    } catch (e) {
+      console.error(`[PixivReader][injectCookie] 失败: ${JSON.stringify(e)}`);
+    }
+  }
+
+  // 在线模式：WebView 动态注入字号
   private injectFontSize(size: number): void {
+    if (!this.isControllerReady) return;
     try {
       this.webController.runJavaScript(
         `document.body.style.fontSize = '${size}px';`
@@ -289,294 +285,216 @@ struct PixivNovelReaderPage {
     } catch (_) {}
   }
 
-  private loadOfflineHtmlFile(): void {
-    const TAG = '[PixivReader][loadOfflineHtmlFile]';
-    try {
-      const html = parsePixivContent(this.cachedText, this.isDark);
-      const ctx = getContext(this) as common.UIAbilityContext;
-      const filePath = ctx.cacheDir + '/offline_novel.html';
-
-      // 同步写入临时 HTML 文件
-      const file = fs.openSync(filePath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-      fs.writeSync(file.fd, html);
-      fs.closeSync(file.fd);
-      console.info(`${TAG} ✅ HTML 文件已写入: ${filePath}，大小=${html.length}`);
-
-      // 用 file:// 协议加载
-      const fileUrl = 'file://' + filePath;
-      console.info(`${TAG} 开始 loadUrl: ${fileUrl}`);
-      this.webController.loadUrl(fileUrl);
-      console.info(`${TAG} ✅ loadUrl 调用完成`);
-    } catch (e) {
-      console.error(`${TAG} ❌ loadOfflineHtmlFile 失败: ${JSON.stringify(e)}`);
-    }
-  }
-
-  // 在线模式注入 Cookie（让 WebView 携带登录态）
-  private injectCookie(): void {
-    const TAG = '[PixivReader][injectCookie]';
-    try {
-      // 方式1：直接从 AppStorage 读（注意：key 必须存在才能读到）
-      const session = AppStorage.get<string>('pixivSessionId') ?? '';
-
-      console.info(`${TAG} AppStorage.get('pixivSessionId') = "${session ? session.substring(0, 8) + '...' : '(empty)'}"`);
-      console.info(`${TAG} session 长度 = ${session.length}`);
-
-      if (!session || session.trim() === '') {
-        console.warn(`${TAG} ⚠️ PHPSESSID 为空，跳过 Cookie 注入！`);
-        console.warn(`${TAG} 请确认：1) CrawlerSettings 中已输入 PHPSESSID；2) AppStorage key 拼写正确`);
-        return;
-      }
-
-      const cookieStr = `PHPSESSID=${session.trim()}`;
-      console.info(`${TAG} 准备注入 Cookie: ${cookieStr.substring(0, 20)}...`);
-
-      web_webview.WebCookieManager.configCookieSync(
-        'https://www.pixiv.net',
-        cookieStr
-      );
-      console.info(`${TAG} ✅ Cookie 注入成功`);
-
-      // 验证注入结果
-      const injected = web_webview.WebCookieManager.fetchCookieSync('https://www.pixiv.net');
-      console.info(`${TAG} 当前 pixiv.net Cookie: ${injected ? injected.substring(0, 50) : '(none)'}`);
-
-    } catch (e) {
-      // ✅ 不再吞异常，改为详细打印
-      console.error(`${TAG} ❌ Cookie 注入失败: ${JSON.stringify(e)}`);
-    }
-  }
-
   // ========================================
-  // UI
+  // UI：顶部导航栏
   // ========================================
-
-  build() {
-    Column() {
-
-      // ── 顶部导航栏 ──
-      this.HeaderBar()
-
-      // ── 分割线 ──
-      Divider()
-        .color(this.getColors().divider)
-        .strokeWidth(0.5)
-
-      // ── 内容区 ──
-      Stack() {
-        // 离线模式 & 在线模式 共用同一个 WebView，内容来源不同
-        if (this.offlineMode) {
-          this.OfflineWebView()
-        } else {
-          this.OnlineWebView()
-        }
-        if (!this.offlineMode && this.isPageLoading) {
-          this.LoadingBar()
-        }
-
-        // WebView 加载进度条（在线模式才显示）
-        if (!this.params?.offline && this.isPageLoading) {
-          this.LoadingBar()
-        }
-      }
-      .width('100%')
-      .layoutWeight(1)
-
-      // ── 字体调节面板（浮层）──
-      if (this.showFontPanel) {
-        this.FontSizePanel()
-      }
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(this.getColors().pageBg)
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
-  }
-
-  // ----------------------------------------
-  // 顶部导航栏
-  // ----------------------------------------
 
   @Builder HeaderBar() {
     Row() {
       // 返回按钮
-      Text('←')
-        .fontSize(22)
-        .fontColor(this.getColors().primaryText)
-        .padding({ left: 4, right: 4 })
-        .backgroundColor(Color.Transparent)
-        .onClick((): void => { router.back() })
+      Button({ type: ButtonType.Circle }) {
+        Text('←')
+          .fontSize(20)
+          .fontColor(this.getColors().iconBtnText)
+      }
+      .width(40).height(40)
+      .backgroundColor(this.getColors().iconBtnBg)
+      .onClick(() => router.back())
 
-      // 标题 + 作者
+      // 标题区
       Column() {
         Text(this.novelTitle)
-          .fontSize(15)
+          .fontSize(16)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.getColors().primaryText)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        if (this.params?.author) {
+          .width('100%')
+        if (this.novelAuthor) {
           Text(this.novelAuthor)
             .fontSize(12)
             .fontColor(this.getColors().secondaryText)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
             .margin({ top: 2 })
         }
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
-      .margin({ left: 12 })
-
-      // 离线/在线 徽章
-      Text(this.offlineMode ? '📥 离线' : '🌐 在线')
-        .fontSize(11)
-        .fontColor(this.params?.offline ? '#52C41A' : this.getColors().accentText)
-        .backgroundColor(this.getColors().iconBtnBg)
-        .borderRadius(6)
-        .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+      .padding({ left: 12, right: 12 })
 
       // 字号调节按钮
-      Text('字')
-        .fontSize(15)
-        .fontColor(this.getColors().iconBtnText)
-        .backgroundColor(this.getColors().iconBtnBg)
-        .borderRadius(6)
-        .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-        .margin({ left: 8 })
-        .onClick((): void => {
-          this.showFontPanel = !this.showFontPanel
-        })
+      Button({ type: ButtonType.Circle }) {
+        Text('A')
+          .fontSize(16)
+          .fontColor(this.getColors().iconBtnText)
+      }
+      .width(40).height(40)
+      .backgroundColor(this.getColors().iconBtnBg)
+      .onClick(() => { this.showFontPanel = !this.showFontPanel; })
     }
     .width('100%')
-    .padding({
-      left:   16,
-      right:  16,
-      top:    12 + px2vp(this.statusBarHeight),
-      bottom: 12
-    })
+    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
     .backgroundColor(this.getColors().headerBg)
   }
 
-  // ----------------------------------------
-  // 离线 WebView（渲染本地 HTML）
-  // ----------------------------------------
+  // ========================================
+  // ★ 核心 UI：离线原生渲染（完全替代 OfflineWebView）
+  // ========================================
 
-  // ✅ 修复后
-  @Builder OfflineWebView() {
-    Web({
-      src: 'about:blank',
-      controller: this.webController
-    })
-      .onControllerAttached((): void => {
-        this.isControllerReady = true;
-        if (this.cachedText) {
-          this.loadOfflineHtmlFile();
-        }
-      })
-      .onPageEnd((): void => {
-        this.injectFontSize(this.fontSize);
-      })
-      .javaScriptAccess(true)
-      .domStorageAccess(true)
-      .fileAccess(true)
+  @Builder OfflineReaderView() {
+    if (this.isLoading) {
+      // 加载中
+      Column() {
+        LoadingProgress()
+          .width(48).height(48)
+          .color(this.getColors().accentText)
+        Text('正在加载...')
+          .fontSize(14)
+          .fontColor(this.getColors().secondaryText)
+          .margin({ top: 12 })
+      }
       .width('100%')
       .height('100%')
-      .backgroundColor(this.isDark ? '#0D0D0D' : '#F9F7F2')
-  }
+      .justifyContent(FlexAlign.Center)
 
-  // ── 当 novelUrl 被 aboutToAppear 设置时，若控制器已就绪则立刻加载 ──
-  @State @Watch('onNovelUrlChange') private novelUrl: string = '';
-  @State private isControllerReady: boolean = false;
+    } else if (this.contentBlocks.length === 0) {
+      // 空内容
+      Column() {
+        Text('📭')
+          .fontSize(48)
+          .margin({ bottom: 12 })
+        Text('内容为空')
+          .fontSize(16)
+          .fontColor(this.getColors().secondaryText)
+      }
+      .width('100%')
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
 
-  private onNovelUrlChange(): void {
-    if (this.isControllerReady && this.novelUrl) {
-      setTimeout(() => {
-        try {
-          this.injectCookie();
-          this.webController.loadUrl(this.novelUrl);
-        } catch (e) {
-          console.error('[onNovelUrlChange] loadUrl 失败: ' + JSON.stringify(e));
+    } else {
+      // ★ 正文渲染：Scroll + List，流畅可滚动
+      Scroll() {
+        Column() {
+          ForEach(
+            this.contentBlocks,
+            (block: ContentBlock, index: number) => {
+              if (block.type === 'chapter') {
+                // 章节标题
+                Row() {
+                  // 左侧边框
+                  Blank()
+                    .width(3)
+                    .height('100%')
+                    .backgroundColor(this.getColors().chapterColor)
+                  
+                  Text(block.text)
+                    .fontSize(this.fontSize * 1.1)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor(this.getColors().chapterColor)
+                    .layoutWeight(1)
+                    .padding({ left: 13, right: 16, top: 20, bottom: 8 })
+                }
+                .margin({ left: 16, top: 4, bottom: 4 })
+                .width('100%')
+
+              } else if (block.type === 'hr') {
+                // 分页线
+                Divider()
+                  .color(this.getColors().hrColor)
+                  .strokeWidth(1)
+                  .margin({ top: 24, bottom: 24, left: 20, right: 20 })
+
+              } else if (block.type === 'blank') {
+                // 空行间距
+                Row()
+                  .height(this.fontSize * 0.6)
+                  .width('100%')
+
+              } else {
+                // 普通段落
+                Text(block.text)
+                  .fontSize(this.fontSize)
+                  .fontWeight(block.bold ? FontWeight.Bold : FontWeight.Normal)
+                  .fontStyle(block.italic ? FontStyle.Italic : FontStyle.Normal)
+                  .fontColor(this.getColors().primaryText)
+                  .lineHeight(this.fontSize * 1.9)
+                  .width('100%')
+                  .padding({ left: 20, right: 20 })
+                  .textAlign(TextAlign.Start)
+                  .copyOption(CopyOptions.LocalDevice)
+              }
+            },
+            (block: ContentBlock, index: number) => `block_${index}`
+          )
+
+          // 底部留白
+          Row().height(80).width('100%')
         }
-      }, 100);
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .height('100%')
+      .scrollable(ScrollDirection.Vertical)
+      .edgeEffect(EdgeEffect.Spring)
     }
   }
 
-
-  // ----------------------------------------
-  // 在线 WebView（带 Cookie 打开 Pixiv 真实页面）
-  // ----------------------------------------
+  // ========================================
+  // UI：在线 WebView（完全保留原逻辑）
+  // ========================================
 
   @Builder OnlineWebView() {
     Web({
-      src: 'about:blank',
+      src:        this.novelUrl || 'about:blank',
       controller: this.webController
     })
-      .width('100%')
-      .height('100%')
-      .javaScriptAccess(true)
-      .domStorageAccess(true)
       .onControllerAttached((): void => {
-        const TAG = '[PixivReader][OnlineWebView]';
-        console.info(`${TAG} onControllerAttached 触发`);
-        console.info(`${TAG} novelUrl = ${this.novelUrl}`);
-
+        const TAG = '[PixivReader][OnlineWebView][onControllerAttached]';
         this.isControllerReady = true;
         if (this.novelUrl) {
           setTimeout(() => {
             try {
-              console.info(`${TAG} 开始注入 Cookie...`);
               this.injectCookie();
-              console.info(`${TAG} 开始 loadUrl: ${this.novelUrl}`);
               this.webController.loadUrl(this.novelUrl);
-              console.info(`${TAG} loadUrl 调用完成`);
             } catch (e) {
-              console.error(`${TAG} ❌ loadUrl 失败: ${JSON.stringify(e)}`);
+              console.error(`${TAG} loadUrl 失败: ${JSON.stringify(e)}`);
             }
           }, 100);
-        } else {
-          console.warn(`${TAG} ⚠️ novelUrl 为空，不执行 loadUrl`);
         }
       })
       .onProgressChange((event): void => {
         const progress = event?.newProgress ?? 0;
-        this.loadProgress  = progress;
-        this.isPageLoading = progress < 100;
-        if (progress % 20 === 0) { // 每20%打一次log，不刷屏
-          console.info(`[PixivReader] 加载进度: ${progress}%`);
-        }
+        this.loadProgress = progress;
+        this.isLoading    = progress < 100;
       })
-      .onPageBegin((event): void => {
-        console.info(`[PixivReader] onPageBegin url=${event?.url ?? '(unknown)'}`);
-      })
-      .onPageEnd((event): void => {
-        const TAG = '[PixivReader][onPageEnd]';
-        this.isPageLoading = false;
-        console.info(`${TAG} 页面加载完成 url=${event?.url ?? '(unknown)'}`);
-        // 页面加载完成后再次注入，防止页面跳转导致 Cookie 丢失
+      .onPageEnd((): void => {
+        this.isLoading = false;
         this.injectCookie();
+        this.injectFontSize(this.fontSize);
       })
       .onErrorReceive((event): void => {
         const code = event?.error?.getErrorCode() ?? -1;
-        const desc = event?.error?.getErrorInfo() ?? '';
-        console.error(`[PixivReader] ❌ onErrorReceive code=${code} desc=${desc}`);
+        console.error(`[PixivReader] onErrorReceive code=${code}`);
         if (code === -6) {
           promptAction.showToast({ message: '网络不可用，请先缓存后离线阅读' });
         }
       })
-      .onHttpErrorReceive((event): void => {
-        const code = event?.response?.getResponseCode() ?? -1;
-        console.error(`[PixivReader] ❌ HTTP错误 code=${code} url=${event?.request?.getRequestUrl() ?? ''}`);
-      })
+      .javaScriptAccess(true)
+      .domStorageAccess(true)
+      .mixedMode(MixedMode.All)
+      .width('100%')
+      .height('100%')
   }
 
-  // ----------------------------------------
-  // 加载进度条（在线模式）
-  // ----------------------------------------
+  // ========================================
+  // UI：在线模式加载进度条
+  // ========================================
 
   @Builder LoadingBar() {
     Column() {
-      // 顶部细线进度条
       Progress({
         value: this.loadProgress,
         total: 100,
@@ -587,7 +505,6 @@ struct PixivNovelReaderPage {
         .color(this.getColors().accentText)
         .backgroundColor(Color.Transparent)
 
-      // 中央 Loading 提示（进度 < 30% 时显示，避免一闪而过）
       if (this.loadProgress < 30) {
         Column() {
           LoadingProgress()
@@ -614,106 +531,117 @@ struct PixivNovelReaderPage {
     .alignItems(HorizontalAlign.Start)
   }
 
-  // ----------------------------------------
-  // 字号调节面板（底部浮层）
-  // ----------------------------------------
+  // ========================================
+  // UI：字号调节面板
+  // ========================================
 
   @Builder FontSizePanel() {
     Column() {
-      // 遮罩（点击关闭）
+      // 遮罩
       Blank()
         .layoutWeight(1)
         .width('100%')
-        .onClick((): void => {
-          this.showFontPanel = false
-        })
+        .onClick(() => { this.showFontPanel = false; })
 
-      // 面板主体
+      // 控制面板
       Column() {
-        // 拖动条标题
-        Row() {
-          Text('字体大小')
-            .fontSize(14)
-            .fontColor(this.getColors().primaryText)
-            .fontWeight(FontWeight.Medium)
-          Blank()
-          Text(`${this.fontSize}px`)
-            .fontSize(14)
-            .fontColor(this.getColors().accentText)
-            .fontWeight(FontWeight.Bold)
-        }
-        .width('100%')
-        .padding({ bottom: 14 })
+        Text('字体大小')
+          .fontSize(14)
+          .fontColor(this.getColors().secondaryText)
+          .margin({ bottom: 12 })
 
-        // 快捷字号按钮
         Row() {
-          ForEach([14, 16, 18, 20, 22, 26] as number[], (size: number): void => {
-            Text(`${size}`)
-              .fontSize(13)
-              .fontColor(this.fontSize === size
-                ? '#FFFFFF'
-                : this.getColors().primaryText)
-              .backgroundColor(this.fontSize === size
-                ? this.getColors().accentText
-                : this.getColors().iconBtnBg)
-              .borderRadius(8)
-              .padding({ left: 12, right: 12, top: 7, bottom: 7 })
-              .margin({ right: 8 })
-              .onClick((): void => {
-                this.fontSize = size;
-                this.injectFontSize(size);
-              })
-          })
-        }
-        .width('100%')
-
-        // 增减按钮
-        Row() {
+          // 缩小
           Button('A-')
-            .fontSize(15)
-            .fontColor(this.getColors().primaryText)
+            .fontSize(16)
+            .fontColor(this.getColors().iconBtnText)
             .backgroundColor(this.getColors().iconBtnBg)
-            .borderRadius(10)
+            .borderRadius(8)
             .height(40)
-            .layoutWeight(1)
-            .onClick((): void => {
+            .padding({ left: 20, right: 20 })
+            .onClick(() => {
               if (this.fontSize > 12) {
-                this.fontSize -= 1;
-                this.injectFontSize(this.fontSize);
+                this.fontSize -= 2;
+                // 在线模式同步注入
+                if (!this.offlineMode) this.injectFontSize(this.fontSize);
               }
             })
 
           Text(`${this.fontSize}px`)
             .fontSize(16)
             .fontColor(this.getColors().primaryText)
-            .fontWeight(FontWeight.Bold)
+            .width(80)
             .textAlign(TextAlign.Center)
-            .layoutWeight(1)
 
+          // 放大
           Button('A+')
-            .fontSize(15)
-            .fontColor(this.getColors().primaryText)
+            .fontSize(16)
+            .fontColor(this.getColors().iconBtnText)
             .backgroundColor(this.getColors().iconBtnBg)
-            .borderRadius(10)
+            .borderRadius(8)
             .height(40)
-            .layoutWeight(1)
-            .onClick((): void => {
+            .padding({ left: 20, right: 20 })
+            .onClick(() => {
               if (this.fontSize < 32) {
-                this.fontSize += 1;
-                this.injectFontSize(this.fontSize);
+                this.fontSize += 2;
+                if (!this.offlineMode) this.injectFontSize(this.fontSize);
               }
             })
         }
         .width('100%')
-        .margin({ top: 14 })
+        .justifyContent(FlexAlign.Center)
       }
       .width('100%')
-      .padding({ left: 20, right: 20, top: 20, bottom: 30 })
+      .padding(20)
       .backgroundColor(this.getColors().headerBg)
       .borderRadius({ topLeft: 16, topRight: 16 })
+      .shadow({ radius: 16, color: '#00000033', offsetY: -4 })
     }
     .width('100%')
     .height('100%')
-    .position({ x: 0, y: 0 })
+  }
+
+  // ========================================
+  // 主 build
+  // ========================================
+
+  build() {
+    Stack() {
+      Column() {
+        // 顶部导航栏
+        this.HeaderBar()
+
+        // 分割线
+        Divider()
+          .color(this.getColors().divider)
+          .strokeWidth(0.5)
+
+        // ★ 内容区：离线用原生渲染，在线用 WebView
+        Stack() {
+          if (this.offlineMode) {
+            // ★ 完全原生渲染，无 WebView，无白屏风险
+            this.OfflineReaderView()
+          } else {
+            this.OnlineWebView()
+            // 在线加载进度条
+            if (this.isLoading) {
+              this.LoadingBar()
+            }
+          }
+        }
+        .layoutWeight(1)
+        .width('100%')
+      }
+      .width('100%')
+      .height('100%')
+      .backgroundColor(this.getColors().pageBg)
+
+      // 字号面板浮层
+      if (this.showFontPanel) {
+        this.FontSizePanel()
+      }
+    }
+    .width('100%')
+    .height('100%')
   }
 }

@@ -77,6 +77,9 @@
           ],
           "when": "always"
         }
+      },
+      {
+        "name": "ohos.permission.GET_NETWORK_INFO"
       }
     ]
   }
