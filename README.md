@@ -1,1 +1,1 @@
-harmonyOS 6 阅读器
+基于 HarmonyOS 的 Pixiv 小说阅读器

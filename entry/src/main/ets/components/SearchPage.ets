@@ -15,7 +15,8 @@ import {
   formatTextLength,
   formatPixivDate,
   getCacheStatusDisplay,
-  isReadableOffline
+  isReadableOffline,
+  PixivSearchMode
 } from '../models/PixivModels';
 import { getPixivService, PixivService, SearchThrottle } from '../services/PixivService';
 import { pixivCacheDB } from '../database/PixivCacheDB';
@@ -220,7 +221,8 @@ export struct SearchPage {
       keyword,
       page,
       order:  this.pixivSortOrder  as PixivSortOrder,
-      mode:   this.pixivContentMode as PixivContentMode
+      mode:   this.pixivContentMode as PixivContentMode,
+      searchMode: PixivSearchMode.TAG_ONLY
     }
     const result = await this.pixivService.searchNovels(params)
     if (result.success && result.data) {

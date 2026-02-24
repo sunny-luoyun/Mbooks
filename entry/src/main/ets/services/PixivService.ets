@@ -11,7 +11,8 @@ import {
   parsePixivNovelFromRaw,
   RawPixivNovelItem,
   PixivSeries,
-  PixivTag
+  PixivTag,
+  PixivSearchMode
 } from '../models/PixivModels';
 
 // ========================================
@@ -129,6 +130,7 @@ export class PixivService {
     const page = params.page ?? 1;
     const order = params.order ?? PixivSortOrder.DATE_DESC;
     const mode = params.mode ?? PixivContentMode.ALL;
+    const sMode   = params.searchMode ?? PixivSearchMode.TAG_ONLY;  // ← 新增，默认 s_tag
 
     if (!keyword.trim()) {
       return { success: false, error: '搜索关键词不能为空' };
@@ -140,6 +142,8 @@ export class PixivService {
         `?word=${encoded}` +
         `&order=${order}` +
         `&mode=${mode}` +
+        `&s_mode=${sMode}` +
+        `&include_translated_tags=1` +
         `&p=${page}` +
         `&type=novel` +
         `&lang=zh`;

@@ -102,6 +102,7 @@ export interface PixivSearchParams {
   page: number;                       // 页码，从1开始
   order?: PixivSortOrder;             // 排序方式，默认 DATE_DESC
   mode?: PixivContentMode;            // 内容分级，默认 ALL
+  searchMode?: PixivSearchMode;
   includeTranslationTags?: boolean;   // 是否匹配翻译后的标签
 }
 
@@ -211,6 +212,13 @@ export function formatPixivDate(isoDate: string): string {
   if (!isoDate) return '';
   // "2024-03-15T12:34:56+09:00" -> "2024/03/15"
   return isoDate.substring(0, 10).replace(/-/g, '/');
+}
+
+// 新增：搜索模式
+export enum PixivSearchMode {
+  TAG_ONLY    = 's_tag',       // 标签精确匹配（网站默认，推荐）
+  TAG_FULL    = 's_tag_full',  // 标签完整词匹配
+  TEXT        = 's_tc'         // 标题/说明文字模糊搜索
 }
 
 // ========================================
