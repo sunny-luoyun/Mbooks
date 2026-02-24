@@ -2,9 +2,7 @@
 import { CrawlerConfig } from '../../models/SettingsModels';
 import { SettingsService } from '../../services/SettingsService';
 import promptAction from '@ohos.promptAction';
-import { Configuration } from '@ohos.app.ability.Configuration';
 import common from '@ohos.app.ability.common';
-// ✅ 修复：静态导入，替代之前的动态 import + 解构
 import { getPixivService } from '../../services/PixivService';
 import { saveSessionId, clearSessionId } from '../../utils/PreferencesUtil';
 
@@ -28,20 +26,20 @@ interface ColorConfig {
 function getCrawlerSettingsColors(mode: number): ColorConfig {
   const isDark = mode === 0;
   return {
-    pageBg: isDark ? '#0D0D0D' : '#F5F5F5',
-    cardBg: isDark ? '#1E1E1E' : '#FFFFFF',
-    headerBg: isDark ? '#141414' : '#FFFFFF',
-    primaryText: isDark ? '#E6E6E6' : '#000000',
+    pageBg:        isDark ? '#0D0D0D' : '#F5F5F5',
+    cardBg:        isDark ? '#1E1E1E' : '#FFFFFF',
+    headerBg:      isDark ? '#141414' : '#FFFFFF',
+    primaryText:   isDark ? '#E6E6E6' : '#000000',
     secondaryText: isDark ? '#999999' : '#666666',
-    tertiaryText: isDark ? '#666666' : '#999999',
-    accentText: '#007DFF',
-    dangerText: '#FF4D4F',
-    sliderTrack: isDark ? '#3A3A3A' : '#E5E5E5',
-    sliderBlock: '#007DFF',
-    toggleOn: '#007DFF',
-    toggleOff: isDark ? '#3A3A3A' : '#CCCCCC',
-    hintText: isDark ? '#555555' : '#999999',
-    divider: isDark ? '#2A2A2A' : '#E5E5E5'
+    tertiaryText:  isDark ? '#666666' : '#999999',
+    accentText:    '#007DFF',
+    dangerText:    '#FF4D4F',
+    sliderTrack:   isDark ? '#3A3A3A' : '#E5E5E5',
+    sliderBlock:   '#007DFF',
+    toggleOn:      '#007DFF',
+    toggleOff:     isDark ? '#3A3A3A' : '#CCCCCC',
+    hintText:      isDark ? '#555555' : '#999999',
+    divider:       isDark ? '#2A2A2A' : '#E5E5E5'
   };
 }
 
@@ -83,7 +81,7 @@ export struct CrawlerSettings {
     };
     this.configCallbackId = ctx.getApplicationContext().on('environment', {
       onConfigurationUpdated: this.configChangeCallback,
-      onMemoryLevel: (level: number) => {}
+      onMemoryLevel: (_level: number) => {}
     });
   }
 
@@ -103,10 +101,10 @@ export struct CrawlerSettings {
 
   private copyConfig(config: CrawlerConfig): CrawlerConfig {
     return {
-      maxPagesPerRun: config.maxPagesPerRun,
-      stopAfterOldPages: config.stopAfterOldPages,
-      requestDelay: config.requestDelay,
-      enableBreakpoint: config.enableBreakpoint,
+      maxPagesPerRun:     config.maxPagesPerRun,
+      stopAfterOldPages:  config.stopAfterOldPages,
+      requestDelay:       config.requestDelay,
+      enableBreakpoint:   config.enableBreakpoint,
       autoCheckOnStartup: config.autoCheckOnStartup,
       checkIntervalHours: config.checkIntervalHours
     };
@@ -117,11 +115,12 @@ export struct CrawlerSettings {
     value: number | boolean,
     saveToService: boolean = true
   ): void {
+    // 整体替换对象，触发 @State 响应
     this.localConfig = {
-      maxPagesPerRun:    field === 'maxPagesPerRun'    ? value as number  : this.localConfig.maxPagesPerRun,
-      stopAfterOldPages: field === 'stopAfterOldPages' ? value as number  : this.localConfig.stopAfterOldPages,
-      requestDelay:      field === 'requestDelay'      ? value as number  : this.localConfig.requestDelay,
-      enableBreakpoint:  field === 'enableBreakpoint'  ? value as boolean : this.localConfig.enableBreakpoint,
+      maxPagesPerRun:     field === 'maxPagesPerRun'     ? value as number  : this.localConfig.maxPagesPerRun,
+      stopAfterOldPages:  field === 'stopAfterOldPages'  ? value as number  : this.localConfig.stopAfterOldPages,
+      requestDelay:       field === 'requestDelay'       ? value as number  : this.localConfig.requestDelay,
+      enableBreakpoint:   field === 'enableBreakpoint'   ? value as boolean : this.localConfig.enableBreakpoint,
       autoCheckOnStartup: field === 'autoCheckOnStartup' ? value as boolean : this.localConfig.autoCheckOnStartup,
       checkIntervalHours: field === 'checkIntervalHours' ? value as number  : this.localConfig.checkIntervalHours
     };
@@ -154,7 +153,6 @@ export struct CrawlerSettings {
     promptAction.showToast({ message: '已恢复默认设置' });
   }
 
-  // ✅ 修复：去掉动态 import 和解构，直接调用顶部静态导入的 getPixivService
   private async checkCookieValidity(): Promise<void> {
     if (!this.pixivSessionId.trim()) {
       promptAction.showToast({ message: '请先填入 PHPSESSID' });
@@ -163,10 +161,9 @@ export struct CrawlerSettings {
     this.cookieCheckState = 'checking';
     try {
       const svc = getPixivService();
-      const result = await svc.checkLogin();   // 现在返回 ServiceResult<boolean>
+      const result = await svc.checkLogin();
 
       if (!result.success) {
-        // 网络错误，不是 Cookie 问题
         this.cookieCheckState = 'idle';
         promptAction.showToast({ message: `⚠️ 网络异常，无法验证：${result.error}` });
         return;
@@ -178,7 +175,7 @@ export struct CrawlerSettings {
         message: ok ? '✅ Cookie 有效，登录成功' : '❌ Cookie 已失效，请重新获取'
       });
     } catch (_) {
-      this.cookieCheckState = 'idle';   // 注意：这里改为 'idle' 而非 'fail'
+      this.cookieCheckState = 'idle';
       promptAction.showToast({ message: '网络异常，无法验证（非 Cookie 问题）' });
     }
   }
@@ -186,25 +183,91 @@ export struct CrawlerSettings {
   private clearCookie(): void {
     this.pixivSessionId = '';
     this.cookieCheckState = 'idle';
-    clearSessionId();  // ✅ 同时从磁盘清除
+    clearSessionId();
     promptAction.showToast({ message: 'Cookie 已清除' });
   }
 
+  // ─────────────────────────────────────────────
+  // ✅ 修复一：三个 Slider 的标题行改为独立 @Builder，
+  //    内部直接读取 this.localConfig.xxx，不通过参数传递
+  // ─────────────────────────────────────────────
+
   @Builder
-  ItemHeader(title: string, desc: string, value: string) {
+  MaxPagesHeader() {
     Row() {
       Column() {
-        Text(title)
+        Text('单次最大页数')
           .fontSize(16)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.getColors().primaryText)
-        Text(desc)
+        Text('每次检查更新的最大翻页数')
           .fontSize(12)
           .fontColor(this.getColors().tertiaryText)
           .margin({ top: 4 })
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
 
-      Text(value)
+      // 直接引用 @State 字段，响应式实时刷新
+      Text(this.localConfig.maxPagesPerRun + ' 页')
+        .fontSize(14)
+        .fontColor(this.getColors().accentText)
+    }.width('100%').margin({ bottom: 8 })
+  }
+
+  @Builder
+  StopAfterOldPagesHeader() {
+    Row() {
+      Column() {
+        Text('智能停止')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.getColors().primaryText)
+        Text('连续多少页无新内容后自动停止')
+          .fontSize(12)
+          .fontColor(this.getColors().tertiaryText)
+          .margin({ top: 4 })
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+      Text(this.localConfig.stopAfterOldPages + ' 页')
+        .fontSize(14)
+        .fontColor(this.getColors().accentText)
+    }.width('100%').margin({ bottom: 8 })
+  }
+
+  @Builder
+  RequestDelayHeader() {
+    Row() {
+      Column() {
+        Text('请求间隔')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.getColors().primaryText)
+        Text('防止请求过快被封')
+          .fontSize(12)
+          .fontColor(this.getColors().tertiaryText)
+          .margin({ top: 4 })
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+      Text(this.localConfig.requestDelay + ' ms')
+        .fontSize(14)
+        .fontColor(this.getColors().accentText)
+    }.width('100%').margin({ bottom: 8 })
+  }
+
+  @Builder
+  CheckIntervalHeader() {
+    Row() {
+      Column() {
+        Text('检查间隔')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.getColors().primaryText)
+        Text('后台自动检查的时间间隔')
+          .fontSize(12)
+          .fontColor(this.getColors().tertiaryText)
+          .margin({ top: 4 })
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+      Text(this.localConfig.checkIntervalHours + ' 小时')
         .fontSize(14)
         .fontColor(this.getColors().accentText)
     }.width('100%').margin({ bottom: 8 })
@@ -213,7 +276,6 @@ export struct CrawlerSettings {
   @Builder
   PixivCookieCard() {
     Column() {
-
       // 标题行
       Row() {
         Row() {
@@ -223,20 +285,13 @@ export struct CrawlerSettings {
             .fontColor(this.getColors().primaryText)
 
           if (this.cookieCheckState === 'ok') {
-            Text(' ●')
-              .fontSize(12)
-              .fontColor('#52C41A')
+            Text(' ●').fontSize(12).fontColor('#52C41A')
           } else if (this.cookieCheckState === 'fail') {
-            Text(' ●')
-              .fontSize(12)
-              .fontColor('#FF4D4F')
+            Text(' ●').fontSize(12).fontColor('#FF4D4F')
           } else if (this.pixivSessionId.length > 0 && this.cookieCheckState === 'idle') {
-            Text(' ●')
-              .fontSize(12)
-              .fontColor('#FAAD14')
+            Text(' ●').fontSize(12).fontColor('#FAAD14')
           }
-        }
-        .alignItems(VerticalAlign.Center)
+        }.alignItems(VerticalAlign.Center)
 
         Blank()
 
@@ -278,7 +333,6 @@ export struct CrawlerSettings {
         .onChange((val: string): void => {
           this.pixivSessionId = val;
           this.cookieCheckState = 'idle';
-          // ✅ 实时持久化，防止用户输一半就退出
           saveSessionId(val);
         })
 
@@ -326,161 +380,6 @@ export struct CrawlerSettings {
     .margin({ bottom: 12 })
   }
 
-  build() {
-    Column() {
-      // 标题栏
-      Row() {
-        Text('爬取参数')
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.getColors().primaryText)
-        Blank()
-        Button('重置')
-          .fontSize(14)
-          .fontColor(this.getColors().dangerText)
-          .backgroundColor(Color.Transparent)
-          .onClick(() => this.resetToDefault())
-      }
-      .width('100%')
-      .padding({ top: 16, bottom: 16 })
-
-      // Pixiv Cookie 卡片
-      this.PixivCookieCard()
-
-      // 1. 单次最大页数
-      Column() {
-        this.ItemHeader('单次最大页数', '每次检查更新的最大翻页数', this.localConfig.maxPagesPerRun + '页')
-        Slider({
-          value: this.localConfig.maxPagesPerRun,
-          min: 1,
-          max: 300,
-          step: 1
-        })
-          .width('100%')
-          .showTips(true)
-          .trackColor(this.getColors().sliderTrack)
-          .blockColor(this.getColors().sliderBlock)
-          .selectedColor(this.getColors().accentText)
-          .onChange((val: number, mode: SliderChangeMode): void => {
-            this.setConfigField('maxPagesPerRun', val, false);
-            if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
-              this.settingsService?.updateCrawlerConfig({ maxPagesPerRun: val });
-            }
-          })
-      }
-      .width('100%')
-      .padding(16)
-      .backgroundColor(this.getColors().cardBg)
-      .borderRadius(12)
-      .margin({ bottom: 12 })
-
-      // 2. 连续旧页停止
-      Column() {
-        this.ItemHeader('智能停止', '连续多少页无新内容后自动停止', this.localConfig.stopAfterOldPages + '页')
-        Slider({
-          value: this.localConfig.stopAfterOldPages,
-          min: 1,
-          max: 5,
-          step: 1
-        })
-          .width('100%')
-          .showTips(true)
-          .trackColor(this.getColors().sliderTrack)
-          .blockColor(this.getColors().sliderBlock)
-          .selectedColor(this.getColors().accentText)
-          .onChange((val: number, mode: SliderChangeMode): void => {
-            this.setConfigField('stopAfterOldPages', val, false);
-            if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
-              this.settingsService?.updateCrawlerConfig({ stopAfterOldPages: val });
-            }
-          })
-      }
-      .width('100%')
-      .padding(16)
-      .backgroundColor(this.getColors().cardBg)
-      .borderRadius(12)
-      .margin({ bottom: 12 })
-
-      // 3. 请求间隔
-      Column() {
-        this.ItemHeader('请求间隔', '防止请求过快被封', this.localConfig.requestDelay + 'ms')
-        Slider({
-          value: this.localConfig.requestDelay,
-          min: 500,
-          max: 3000,
-          step: 100
-        })
-          .width('100%')
-          .showTips(true)
-          .trackColor(this.getColors().sliderTrack)
-          .blockColor(this.getColors().sliderBlock)
-          .selectedColor(this.getColors().accentText)
-          .onChange((val: number, mode: SliderChangeMode): void => {
-            this.setConfigField('requestDelay', val, false);
-            if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
-              this.settingsService?.updateCrawlerConfig({ requestDelay: val });
-            }
-          })
-      }
-      .width('100%')
-      .padding(16)
-      .backgroundColor(this.getColors().cardBg)
-      .borderRadius(12)
-      .margin({ bottom: 12 })
-
-      // 4. 断点续爬
-      this.ToggleItemBuilder('断点续爬', '网络中断后从上次位置继续', this.localConfig.enableBreakpoint, (val: boolean): void => {
-        this.setConfigField('enableBreakpoint', val, true);
-      })
-
-      // 5. 启动时自动检查
-      this.ToggleItemBuilder('启动时自动检查', '打开应用时自动检查更新', this.localConfig.autoCheckOnStartup, (val: boolean): void => {
-        this.setConfigField('autoCheckOnStartup', val, true);
-      })
-
-      // 6. 后台检查间隔
-      if (this.localConfig.autoCheckOnStartup) {
-        Column() {
-          this.ItemHeader('检查间隔', '后台自动检查的时间间隔', this.localConfig.checkIntervalHours + '小时')
-          Slider({
-            value: this.localConfig.checkIntervalHours,
-            min: 0,
-            max: 24,
-            step: 1
-          })
-            .width('100%')
-            .showTips(true)
-            .trackColor(this.getColors().sliderTrack)
-            .blockColor(this.getColors().sliderBlock)
-            .selectedColor(this.getColors().accentText)
-            .onChange((val: number, mode: SliderChangeMode): void => {
-              this.setConfigField('checkIntervalHours', val, false);
-              if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
-                this.settingsService?.updateCrawlerConfig({ checkIntervalHours: val });
-              }
-            })
-          Text('设为0表示仅启动时检查一次')
-            .fontSize(11)
-            .fontColor(this.getColors().hintText)
-            .margin({ top: 8 })
-        }
-        .width('100%')
-        .padding(16)
-        .backgroundColor(this.getColors().cardBg)
-        .borderRadius(12)
-        .margin({ bottom: 12 })
-      }
-
-      Text('提示：请求间隔建议保持800ms以上，避免被封IP')
-        .fontSize(12)
-        .fontColor(this.getColors().hintText)
-        .margin({ top: 8, bottom: 20 })
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16 })
-    .backgroundColor(this.getColors().pageBg)
-  }
-
   @Builder
   ToggleItemBuilder(title: string, desc: string, isOn: boolean, onChange: (val: boolean) => void) {
     Row() {
@@ -505,5 +404,175 @@ export struct CrawlerSettings {
     .backgroundColor(this.getColors().cardBg)
     .borderRadius(12)
     .margin({ bottom: 12 })
+  }
+
+  build() {
+    // ✅ 修复二：Scroll 包裹，解决底部卡片被遮挡无法滚动的问题
+    Scroll() {
+      Column() {
+        // 标题栏
+        Row() {
+          Text('爬取参数')
+            .fontSize(20)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.getColors().primaryText)
+          Blank()
+          Button('重置')
+            .fontSize(14)
+            .fontColor(this.getColors().dangerText)
+            .backgroundColor(Color.Transparent)
+            .onClick(() => this.resetToDefault())
+        }
+        .width('100%')
+        .padding({ top: 16, bottom: 16 })
+
+        // Pixiv Cookie 卡片
+        this.PixivCookieCard()
+
+        // 1. 单次最大页数
+        Column() {
+          this.MaxPagesHeader()  // ✅ 改用独立 @Builder，内部直接读 @State
+          Slider({
+            value: this.localConfig.maxPagesPerRun,
+            min: 1,
+            max: 300,
+            step: 1
+          })
+            .width('100%')
+            .showTips(true)
+            .trackColor(this.getColors().sliderTrack)
+            .blockColor(this.getColors().sliderBlock)
+            .selectedColor(this.getColors().accentText)
+            .onChange((val: number, mode: SliderChangeMode): void => {
+              this.setConfigField('maxPagesPerRun', val, false);
+              if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+                this.settingsService?.updateCrawlerConfig({ maxPagesPerRun: val });
+              }
+            })
+        }
+        .width('100%')
+        .padding(16)
+        .backgroundColor(this.getColors().cardBg)
+        .borderRadius(12)
+        .margin({ bottom: 12 })
+
+        // 2. 连续旧页停止
+        Column() {
+          this.StopAfterOldPagesHeader()  // ✅ 改用独立 @Builder
+          Slider({
+            value: this.localConfig.stopAfterOldPages,
+            min: 1,
+            max: 5,
+            step: 1
+          })
+            .width('100%')
+            .showTips(true)
+            .trackColor(this.getColors().sliderTrack)
+            .blockColor(this.getColors().sliderBlock)
+            .selectedColor(this.getColors().accentText)
+            .onChange((val: number, mode: SliderChangeMode): void => {
+              this.setConfigField('stopAfterOldPages', val, false);
+              if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+                this.settingsService?.updateCrawlerConfig({ stopAfterOldPages: val });
+              }
+            })
+        }
+        .width('100%')
+        .padding(16)
+        .backgroundColor(this.getColors().cardBg)
+        .borderRadius(12)
+        .margin({ bottom: 12 })
+
+        // 3. 请求间隔
+        Column() {
+          this.RequestDelayHeader()  // ✅ 改用独立 @Builder
+          Slider({
+            value: this.localConfig.requestDelay,
+            min: 500,
+            max: 3000,
+            step: 100
+          })
+            .width('100%')
+            .showTips(true)
+            .trackColor(this.getColors().sliderTrack)
+            .blockColor(this.getColors().sliderBlock)
+            .selectedColor(this.getColors().accentText)
+            .onChange((val: number, mode: SliderChangeMode): void => {
+              this.setConfigField('requestDelay', val, false);
+              if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+                this.settingsService?.updateCrawlerConfig({ requestDelay: val });
+              }
+            })
+        }
+        .width('100%')
+        .padding(16)
+        .backgroundColor(this.getColors().cardBg)
+        .borderRadius(12)
+        .margin({ bottom: 12 })
+
+        // 4. 断点续爬
+        this.ToggleItemBuilder(
+          '断点续爬',
+          '网络中断后从上次位置继续',
+          this.localConfig.enableBreakpoint,
+          (val: boolean): void => { this.setConfigField('enableBreakpoint', val, true); }
+        )
+
+        // 5. 启动时自动检查
+        this.ToggleItemBuilder(
+          '启动时自动检查',
+          '打开应用时自动检查更新',
+          this.localConfig.autoCheckOnStartup,
+          (val: boolean): void => { this.setConfigField('autoCheckOnStartup', val, true); }
+        )
+
+        // 6. 后台检查间隔（仅在开启自动检查时显示）
+        if (this.localConfig.autoCheckOnStartup) {
+          Column() {
+            this.CheckIntervalHeader()  // ✅ 改用独立 @Builder
+            Slider({
+              value: this.localConfig.checkIntervalHours,
+              min: 0,
+              max: 24,
+              step: 1
+            })
+              .width('100%')
+              .showTips(true)
+              .trackColor(this.getColors().sliderTrack)
+              .blockColor(this.getColors().sliderBlock)
+              .selectedColor(this.getColors().accentText)
+              .onChange((val: number, mode: SliderChangeMode): void => {
+                this.setConfigField('checkIntervalHours', val, false);
+                if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+                  this.settingsService?.updateCrawlerConfig({ checkIntervalHours: val });
+                }
+              })
+            Text('设为 0 表示仅启动时检查一次')
+              .fontSize(11)
+              .fontColor(this.getColors().hintText)
+              .margin({ top: 8 })
+          }
+          .width('100%')
+          .padding(16)
+          .backgroundColor(this.getColors().cardBg)
+          .borderRadius(12)
+          .margin({ bottom: 12 })
+        }
+
+        // 底部提示文字
+        Text('提示：请求间隔建议保持 800ms 以上，避免被封 IP')
+          .fontSize(12)
+          .fontColor(this.getColors().hintText)
+          .margin({ top: 8, bottom: 32 })  // bottom: 32 留出底部安全间距
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16 })
+      .backgroundColor(this.getColors().pageBg)
+    }
+    .width('100%')
+    .height('100%')              // ✅ Scroll 必须有明确高度才能生效
+    .scrollBar(BarState.Off)     // 隐藏滚动条
+    .edgeEffect(EdgeEffect.Spring) // 弹性回弹效果
+    .backgroundColor(this.getColors().pageBg)
   }
 }
