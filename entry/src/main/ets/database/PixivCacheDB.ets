@@ -42,7 +42,13 @@ const SQL_CREATE_NOVELS_TABLE = `
     comment_count INTEGER DEFAULT 0,
     cache_status  TEXT    DEFAULT 'not_cached',
     cached_at     TEXT    DEFAULT '',
-    full_text     TEXT    DEFAULT ''
+    full_text     TEXT    DEFAULT '',
+    title_translated   TEXT    DEFAULT '',
+    has_title_translation INTEGER DEFAULT 0,
+    full_text_translated TEXT  DEFAULT '',
+    has_full_translation INTEGER DEFAULT 0,
+    translation_status  TEXT    DEFAULT 'none',
+    translation_progress INTEGER DEFAULT 0
   )
 `;
 // ========================================
@@ -69,6 +75,12 @@ interface ColumnMap {
   CACHE_STATUS: string;
   CACHED_AT: string;
   FULL_TEXT: string;
+  TITLE_TRANSLATED: string;
+  HAS_TITLE_TRANSLATION: string;
+  FULL_TEXT_TRANSLATED: string;
+  HAS_FULL_TRANSLATION: string;
+  TRANSLATION_STATUS: string;
+  TRANSLATION_PROGRESS: string;
 }
 
 const COL: ColumnMap = {
@@ -91,7 +103,13 @@ const COL: ColumnMap = {
   COMMENT_COUNT:  'comment_count',
   CACHE_STATUS:   'cache_status',
   CACHED_AT:      'cached_at',
-  FULL_TEXT:      'full_text'
+  FULL_TEXT:      'full_text',
+  TITLE_TRANSLATED:      'title_translated',
+  HAS_TITLE_TRANSLATION: 'has_title_translation',
+  FULL_TEXT_TRANSLATED:  'full_text_translated',
+  HAS_FULL_TRANSLATION:  'has_full_translation',
+  TRANSLATION_STATUS:    'translation_status',
+  TRANSLATION_PROGRESS:  'translation_progress'
 };
 
 // 所有列（查询时用，避免 SELECT * 的隐患）
@@ -119,13 +137,51 @@ export class PixivCacheDB {
 
     try {
       this.rdbStore = await relationalStore.getRdbStore(ctx, config);
-      await this.rdbStore.executeSql(SQL_CREATE_NOVELS_TABLE);
+      const version: number = this.rdbStore.version;
+
+      if (version === 0) {
+        // 全新数据库：直接建包含所有字段的完整表
+        await this.rdbStore.executeSql(SQL_CREATE_NOVELS_TABLE);
+        this.rdbStore.version = DB_VERSION;
+      } else if (version < DB_VERSION) {
+        // 旧库升级：只做 ALTER TABLE（不重建表）
+        await this.upgradeDatabase(version, DB_VERSION);
+      }
+      // version === DB_VERSION：无需任何操作
+
       this.initialized = true;
       console.info(`[PixivCacheDB] 初始化成功，数据库版本: v${DB_VERSION}`);
     } catch (err) {
       console.error(`[PixivCacheDB] 初始化失败: ${JSON.stringify(err)}`);
     }
   }
+
+  private async upgradeDatabase(oldVersion: number, newVersion: number): Promise<void> {
+    console.info(`[PixivCacheDB] 升级数据库: v${oldVersion} -> v${newVersion}`);
+
+    if (oldVersion < 1) {
+      const alterQueries = [
+        `ALTER TABLE ${TABLE_NOVELS} ADD COLUMN title_translated TEXT DEFAULT '';`,
+        `ALTER TABLE ${TABLE_NOVELS} ADD COLUMN has_title_translation INTEGER DEFAULT 0;`,
+        `ALTER TABLE ${TABLE_NOVELS} ADD COLUMN full_text_translated TEXT DEFAULT '';`,
+        `ALTER TABLE ${TABLE_NOVELS} ADD COLUMN has_full_translation INTEGER DEFAULT 0;`,
+        `ALTER TABLE ${TABLE_NOVELS} ADD COLUMN translation_status TEXT DEFAULT 'none';`,
+        `ALTER TABLE ${TABLE_NOVELS} ADD COLUMN translation_progress INTEGER DEFAULT 0;`
+      ];
+
+      for (const query of alterQueries) {
+        try {
+          await this.rdbStore!.executeSql(query);
+        } catch (e) {
+          // errno 25 = 列已存在，忽略（幂等）
+          console.warn(`[PixivCacheDB] ALTER TABLE 跳过（列可能已存在）: ${JSON.stringify(e)}`);
+        }
+      }
+    }
+
+    this.rdbStore!.version = newVersion;
+  }
+
 
   // 安全检查：所有操作前确认 DB 已就绪
   private checkReady(): boolean {
@@ -174,7 +230,13 @@ export class PixivCacheDB {
       // 保留已有缓存状态，不因刷新元数据而重置
       'cache_status':   keepCacheStatus,
       'cached_at':      keepCachedAt,
-      'full_text':      keepFullText
+      'full_text':      keepFullText,
+      'title_translated':      novel.titleTranslated ?? '',
+      'has_title_translation': novel.hasTitleTranslation ? 1 : 0,
+      'full_text_translated':  novel.fullTextTranslated ?? '',
+      'has_full_translation':  novel.hasFullTranslation ? 1 : 0,
+      'translation_status':    novel.translationStatus ?? 'none',
+      'translation_progress':  novel.translationProgress ?? 0
     };
 
     try {
@@ -206,6 +268,32 @@ export class PixivCacheDB {
       await this.rdbStore!.rollBack();
       console.error(`[PixivCacheDB] 批量写入失败，已回滚: ${JSON.stringify(err)}`);
     }
+  }
+
+  // 新增：保存翻译后的标题
+  async saveTitleTranslation(novelId: string, translatedTitle: string): Promise<void> {
+    await this.updateCacheFields(novelId, {
+      'title_translated': translatedTitle,
+      'has_title_translation': 1
+    });
+  }
+
+  // 新增：保存翻译后的全文
+  async saveFullTextTranslation(novelId: string, translatedText: string): Promise<void> {
+    await this.updateCacheFields(novelId, {
+      'full_text_translated': translatedText,
+      'has_full_translation': 1,
+      'translation_status': 'completed',
+      'translation_progress': 100
+    });
+  }
+
+  // 新增：更新翻译进度
+  async updateTranslationProgress(novelId: string, progress: number, status: string): Promise<void> {
+    await this.updateCacheFields(novelId, {
+      'translation_progress': progress,
+      'translation_status': status
+    });
   }
 
   // 临时调试：在 PixivCacheDB 里加一个方法
@@ -251,12 +339,16 @@ export class PixivCacheDB {
       await this.markCacheFail(novelId);
       return;
     }
-    await this.updateCacheFields(novelId, {
+    const success = await this.updateCacheFields(novelId, {
       'full_text':    fullText,
       'cache_status': CacheStatus.CACHED,
       'cached_at':    new Date().toISOString()
     });
-    console.info(`[PixivCacheDB] 正文缓存成功 id=${novelId}，字数=${fullText.length}`);
+    if (success) {
+      console.info(`[PixivCacheDB] saveFullText 成功 id=${novelId}，长度=${fullText.length}`);
+    } else {
+      console.error(`[PixivCacheDB] saveFullText 失败 id=${novelId}（记录不存在）`);
+    }
   }
 
   /**
@@ -330,9 +422,11 @@ export class PixivCacheDB {
         result.goToFirstRow();
         const text = result.getString(result.getColumnIndex(COL.FULL_TEXT));
         result.close();
+        console.info(`[PixivCacheDB] getFullText 成功 id=${novelId}，长度=${text?.length ?? 0}`);
         return text || null;
       }
       result.close();
+      console.warn(`[PixivCacheDB] getFullText 未找到 id=${novelId} 或状态不为 cached`);
       return null;
     } catch (err) {
       console.error(`[PixivCacheDB] getFullText 失败: ${JSON.stringify(err)}`);
@@ -481,14 +575,23 @@ export class PixivCacheDB {
   private async updateCacheFields(
     novelId: string,
     fields: relationalStore.ValuesBucket
-  ): Promise<void> {
-    if (!this.checkReady()) return;
+  ): Promise<boolean> {
+    if (!this.checkReady()) return false;
     const predicates = new relationalStore.RdbPredicates(TABLE_NOVELS);
     predicates.equalTo(COL.ID, novelId);
     try {
-      await this.rdbStore!.update(fields, predicates);
+      const rows = await this.rdbStore!.update(fields, predicates);
+      if (rows > 0) {
+        return true;
+      } else {
+        console.warn(`[PixivCacheDB] updateCacheFields: 未找到id=${novelId}的记录`);
+        // 可选：尝试插入一条只有 id 的记录（但需要其他字段默认值）
+        // 此处先记录警告，由调用方保证记录存在（已通过 saveNovelMeta 确保）
+        return false;
+      }
     } catch (err) {
       console.error(`[PixivCacheDB] updateCacheFields 失败 id=${novelId}: ${JSON.stringify(err)}`);
+      return false;
     }
   }
 
@@ -549,7 +652,13 @@ export class PixivCacheDB {
           commentCount:  result.getLong(result.getColumnIndex(COL.COMMENT_COUNT)),
           cacheStatus:   cacheStatusRaw || CacheStatus.NOT_CACHED,
           cachedAt:      result.getString(result.getColumnIndex(COL.CACHED_AT)) || undefined,
-          fullText
+          fullText,
+          titleTranslated:     result.getString(result.getColumnIndex(COL.TITLE_TRANSLATED))     || undefined,
+          hasTitleTranslation: result.getLong(result.getColumnIndex(COL.HAS_TITLE_TRANSLATION))  === 1,
+          fullTextTranslated:  result.getString(result.getColumnIndex(COL.FULL_TEXT_TRANSLATED))  || undefined,
+          hasFullTranslation:  result.getLong(result.getColumnIndex(COL.HAS_FULL_TRANSLATION))   === 1,
+          translationStatus:   (result.getString(result.getColumnIndex(COL.TRANSLATION_STATUS))  || 'none') as 'none' | 'in_progress' | 'completed' | 'failed',
+          translationProgress: result.getLong(result.getColumnIndex(COL.TRANSLATION_PROGRESS))   ?? 0,
         });
       }
     } finally {

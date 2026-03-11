@@ -5,6 +5,9 @@ import web_webview from '@ohos.web.webview';
 import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
 import { pixivCacheDB } from '../database/PixivCacheDB';
+import { getDeepSeekService, TranslationResult } from '../services/DeepSeekService';
+
+
 
 // ========================================
 // 路由参数类型
@@ -32,6 +35,12 @@ interface ReaderColors {
   iconBtnText:   string;
   chapterColor:  string;
   hrColor:       string;
+  translateBtnBg: string;
+  translateBtnText: string;
+  translatedTextColor: string;
+  translationProgressBg: string;
+  translationProgressFill: string;
+  dangerText:    string;
 }
 
 function getReaderColors(mode: number): ReaderColors {
@@ -47,6 +56,12 @@ function getReaderColors(mode: number): ReaderColors {
     iconBtnText:   isDark ? '#CCCCCC' : '#444444',
     chapterColor:  isDark ? '#AADDFF' : '#0055AA',
     hrColor:       isDark ? '#333333' : '#DDDDDD',
+    translateBtnBg: isDark ? '#2A2A2A' : '#F0F0F0',
+    translateBtnText: '#007DFF',
+    translatedTextColor: isDark ? '#CCE5FF' : '#0055AA',
+    translationProgressBg: isDark ? '#333333' : '#E5E5E5',
+    translationProgressFill: '#007DFF',
+    dangerText: '#FF4D4F'
   };
 }
 
@@ -170,6 +185,15 @@ struct PixivNovelReaderPage {
   // ── 安全区 ──
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
+  // 在组件类中添加新状态
+  @State private showTranslation: boolean = false;  // 是否显示翻译
+  @State private isTranslating: boolean = false;    // 是否正在翻译
+  @State private translationProgress: number = 0;    // 翻译进度
+  @State private translatedTitle: string = '';       // 翻译后的标题
+  @State private translatedBlocks: ContentBlock[] = []; // 翻译后的段落块
+  @State private showOriginal: boolean = true;       // 显示原文还是译文
+  @State private renderBlocks: ContentBlock[] = [];
+
   // ── 颜色模式监听 ──
   private configCallbackId:      number    = -1;
   private configChangeCallback: () => void = () => {};
@@ -228,25 +252,148 @@ struct PixivNovelReaderPage {
       await pixivCacheDB.init(ctx);
 
       const text = await pixivCacheDB.getFullText(novelId);
-      console.info(`${TAG} getFullText: ${text ? '长度=' + text.length : 'null'}`);
-
       if (!text) {
         promptAction.showToast({ message: '缓存内容丢失，请重新缓存' });
         router.back();
         return;
       }
 
-      // ★ 解析成段落块，赋值触发重渲染
       this.contentBlocks = parsePixivBlocks(text);
+      this.renderBlocks = this.contentBlocks;  // ← 同步给渲染用
       console.info(`${TAG} 解析完成，共 ${this.contentBlocks.length} 个块`);
 
+      const novel = await pixivCacheDB.getNovelById(novelId);
+      if (novel?.hasTitleTranslation && novel.titleTranslated) {
+        this.translatedTitle = novel.titleTranslated;
+      }
+      if (novel?.hasFullTranslation && novel.fullTextTranslated) {
+        this.translatedBlocks = parsePixivBlocks(novel.fullTextTranslated);
+      }
     } catch (e) {
       console.error(`${TAG} 失败: ${JSON.stringify(e)}`);
       promptAction.showToast({ message: '加载失败，请重试' });
     } finally {
-      // 无论成功与否都关闭 loading
       this.isLoading = false;
     }
+  }
+
+  // ✅ 新增：翻译标题
+  private async translateTitle(): Promise<void> {
+    const service = getDeepSeekService();
+
+    if (!service.hasValidKey()) {
+      promptAction.showToast({ message: '请先在设置中填入 DeepSeek API 密钥' });
+      return;
+    }
+
+    this.isTranslating = true;
+
+    const result = await service.translateText(this.novelTitle, true);
+
+    if (result.success && result.translatedText) {
+      this.translatedTitle = result.translatedText;
+
+      // 保存到数据库
+      if (this.params?.novelId) {
+        await pixivCacheDB.saveTitleTranslation(this.params.novelId, result.translatedText);
+      }
+
+      promptAction.showToast({ message: '标题翻译完成' });
+    } else {
+      promptAction.showToast({ message: result.error || '翻译失败' });
+    }
+
+    this.isTranslating = false;
+  }
+
+  // ✅ 新增：翻译全文
+  private async translateFullText(): Promise<void> {
+    const service = getDeepSeekService();
+
+    if (!service.hasValidKey()) {
+      promptAction.showToast({ message: '请先在设置中填入 DeepSeek API 密钥' });
+      return;
+    }
+
+    // 获取原文
+    const novelId = this.params?.novelId;
+    if (!novelId) return;
+
+    const ctx = getContext(this) as common.UIAbilityContext;
+    await pixivCacheDB.init(ctx);
+    const originalText = await pixivCacheDB.getFullText(novelId);
+
+    if (!originalText) {
+      promptAction.showToast({ message: '找不到原文内容' });
+      return;
+    }
+
+    // 估算费用
+    const estimatedCost = service.estimateCost(originalText.length);
+
+    // 确认对话框（鸿蒙没有内置confirm，用promptAction模拟）
+    promptAction.showDialog({
+      title: '确认翻译全文',
+      message: `预计翻译 ${originalText.length} 字符，费用约 $${estimatedCost.toFixed(4)}（仅供参考）。\n是否继续？`,
+      buttons: [
+        { text: '取消', color: '#666666' },
+        { text: '开始翻译', color: '#007DFF' }
+      ]
+    }).then((data) => {
+      if (data.index === 1) { // 用户点击了"开始翻译"
+        this.performFullTranslation(novelId, originalText);
+      }
+    });
+  }
+
+  // ✅ 新增：执行全文翻译
+  private async performFullTranslation(novelId: string, originalText: string): Promise<void> {
+    this.isTranslating = true;
+    this.showTranslation = true;
+    this.translationProgress = 0;
+
+    await pixivCacheDB.updateTranslationProgress(novelId, 0, 'in_progress');
+
+    const paragraphs = originalText.split('\n');
+    const service = getDeepSeekService();
+
+    // ✅ 只用进度回调更新进度条，不在回调里收集结果
+    const results = await service.translateParagraphs(
+      paragraphs,
+      (current, total, _translated) => {
+        this.translationProgress = Math.floor((current / total) * 100);
+      }
+    );
+
+    // ✅ 直接从 results 按顺序提取，空行用原文填充，翻译失败也用原文兜底
+    // 注意：translateParagraphs 对空行 push 了 {success:true, translatedText:''}
+    // 所以 results.length === paragraphs.length，一一对应
+    const translatedParagraphs = results.map((r, i) => {
+      if (!paragraphs[i].trim()) {
+        // 空行：直接保留空字符串
+        return '';
+      }
+      // 翻译成功取译文，失败则保留原文（避免内容丢失）
+      return (r.success && r.translatedText) ? r.translatedText : paragraphs[i];
+    });
+
+    const fullTranslated = translatedParagraphs.join('\n');
+
+    // ✅ 先存到本地变量，避免 @State 响应式赋值的时序问题
+    const newBlocks = parsePixivBlocks(fullTranslated);
+    this.translatedBlocks = newBlocks;
+    this.showOriginal = false;
+    this.showTranslation = true;
+    this.renderBlocks = newBlocks;  // ✅ 用本地变量，保证是最新解析结果
+
+    console.info(`[translate] renderBlocks 数量: ${this.renderBlocks.length}`);
+    console.info(`[translate] showOriginal=${this.showOriginal}, showTranslation=${this.showTranslation}`);
+
+    // 保存到数据库
+    await pixivCacheDB.saveFullTextTranslation(novelId, fullTranslated);
+
+    this.isTranslating = false;
+    promptAction.showToast({ message: '全文翻译完成' });
   }
 
   // ========================================
@@ -303,13 +450,31 @@ struct PixivNovelReaderPage {
 
       // 标题区
       Column() {
-        Text(this.novelTitle)
-          .fontSize(16)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.getColors().primaryText)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
+        if (this.showTranslation && this.translatedTitle) {
+          // 显示翻译后的标题
+          Text(this.translatedTitle)
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.getColors().translatedTextColor)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+          Text(this.novelTitle)
+            .fontSize(11)
+            .fontColor(this.getColors().secondaryText)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+        } else {
+          Text(this.novelTitle)
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.getColors().primaryText)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+        }
+
         if (this.novelAuthor) {
           Text(this.novelAuthor)
             .fontSize(12)
@@ -324,6 +489,57 @@ struct PixivNovelReaderPage {
       .alignItems(HorizontalAlign.Start)
       .padding({ left: 12, right: 12 })
 
+      // ✅ 新增：翻译按钮（只在离线模式显示）
+      if (this.offlineMode) {
+        // 原文/译文切换
+        Button({ type: ButtonType.Circle }) {
+          Text(this.showOriginal ? '译' : '原')
+            .fontSize(16)
+            .fontColor(this.getColors().translateBtnText)
+        }
+        .width(40).height(40)
+        .backgroundColor(this.getColors().translateBtnBg)
+        .margin({ right: 8 })
+        .enabled(this.translatedBlocks.length > 0)
+        .onClick(() => {
+          this.showOriginal = !this.showOriginal;
+          this.showTranslation = !this.showOriginal;
+          this.renderBlocks = this.showOriginal
+            ? this.contentBlocks
+            : this.translatedBlocks;
+        })
+
+        // 翻译按钮
+        Button({ type: ButtonType.Circle }) {
+          if (this.isTranslating) {
+            LoadingProgress()
+              .width(20).height(20)
+              .color(this.getColors().accentText)
+          } else {
+            Text('翻')
+              .fontSize(16)
+              .fontColor(this.translatedBlocks.length > 0
+                ? this.getColors().translatedTextColor
+                : this.getColors().translateBtnText)
+          }
+        }
+        .width(40).height(40)
+        .backgroundColor(this.getColors().translateBtnBg)
+        .margin({ right: 8 })
+        .onClick(() => {
+          if (this.translatedBlocks.length > 0) {
+            // ✅ 同时切换 showTranslation、showOriginal、renderBlocks 三个状态
+            this.showTranslation = !this.showTranslation;
+            this.showOriginal = !this.showTranslation; // showTranslation=true 时显示译文
+            this.renderBlocks = this.showTranslation
+              ? this.translatedBlocks
+              : this.contentBlocks;
+          } else {
+            this.translateFullText();
+          }
+        })
+      }
+
       // 字号调节按钮
       Button({ type: ButtonType.Circle }) {
         Text('A')
@@ -335,7 +551,12 @@ struct PixivNovelReaderPage {
       .onClick(() => { this.showFontPanel = !this.showFontPanel; })
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    .padding({
+      left: 16,
+      right: 16,
+      top: 12 + px2vp(this.statusBarHeight),  // ← 加上状态栏高度
+      bottom: 12
+    })
     .backgroundColor(this.getColors().headerBg)
   }
 
@@ -374,25 +595,29 @@ struct PixivNovelReaderPage {
       .justifyContent(FlexAlign.Center)
 
     } else {
+
       // ★ 正文渲染：Scroll + List，流畅可滚动
       Scroll() {
         Column() {
           ForEach(
-            this.contentBlocks,
+            this.renderBlocks,
             (block: ContentBlock, index: number) => {
               if (block.type === 'chapter') {
-                // 章节标题
+                // 章节标题（翻译时用不同颜色）
                 Row() {
-                  // 左侧边框
                   Blank()
                     .width(3)
                     .height('100%')
-                    .backgroundColor(this.getColors().chapterColor)
-                  
+                    .backgroundColor(this.showOriginal
+                      ? this.getColors().chapterColor
+                      : this.getColors().translatedTextColor)
+
                   Text(block.text)
                     .fontSize(this.fontSize * 1.1)
                     .fontWeight(FontWeight.Bold)
-                    .fontColor(this.getColors().chapterColor)
+                    .fontColor(this.showOriginal
+                      ? this.getColors().chapterColor
+                      : this.getColors().translatedTextColor)
                     .layoutWeight(1)
                     .padding({ left: 13, right: 16, top: 20, bottom: 8 })
                 }
@@ -400,17 +625,14 @@ struct PixivNovelReaderPage {
                 .width('100%')
 
               } else if (block.type === 'hr') {
-                // 分页线
-                Divider()
-                  .color(this.getColors().hrColor)
+                // 分页线...
+                Divider().color(this.getColors().hrColor)
                   .strokeWidth(1)
                   .margin({ top: 24, bottom: 24, left: 20, right: 20 })
 
               } else if (block.type === 'blank') {
-                // 空行间距
-                Row()
-                  .height(this.fontSize * 0.6)
-                  .width('100%')
+                // 空行...
+                Row().height(this.fontSize * 0.6).width('100%')
 
               } else {
                 // 普通段落
@@ -418,7 +640,9 @@ struct PixivNovelReaderPage {
                   .fontSize(this.fontSize)
                   .fontWeight(block.bold ? FontWeight.Bold : FontWeight.Normal)
                   .fontStyle(block.italic ? FontStyle.Italic : FontStyle.Normal)
-                  .fontColor(this.getColors().primaryText)
+                  .fontColor(this.showOriginal
+                    ? this.getColors().primaryText
+                    : this.getColors().translatedTextColor)
                   .lineHeight(this.fontSize * 1.9)
                   .width('100%')
                   .padding({ left: 20, right: 20 })
@@ -426,7 +650,7 @@ struct PixivNovelReaderPage {
                   .copyOption(CopyOptions.LocalDevice)
               }
             },
-            (block: ContentBlock, index: number) => `block_${index}`
+            (block: ContentBlock, index: number) => `${this.showOriginal ? 'orig' : 'trans'}_${index}`
           )
 
           // 底部留白
@@ -439,6 +663,41 @@ struct PixivNovelReaderPage {
       .height('100%')
       .scrollable(ScrollDirection.Vertical)
       .edgeEffect(EdgeEffect.Spring)
+
+      // 翻译进度条
+      if (this.isTranslating) {
+        Column() {
+          Row() {
+            Text(`翻译中... ${this.translationProgress}%`)
+              .fontSize(12)
+              .fontColor(this.getColors().secondaryText)
+            Blank()
+            Text('取消')
+              .fontSize(12)
+              .fontColor(this.getColors().dangerText)
+              .onClick(() => {
+                // 取消翻译逻辑（需要实现取消功能）
+              })
+          }
+          .width('100%')
+          .padding({ left: 20, right: 20, bottom: 8 })
+
+          Progress({
+            value: this.translationProgress,
+            total: 100,
+            type: ProgressType.Linear
+          })
+            .width('100%')
+            .height(4)
+            .color(this.getColors().accentText)
+            .backgroundColor(this.getColors().translationProgressBg)
+        }
+        .width('100%')
+        .backgroundColor(this.getColors().headerBg)
+        .padding({ top: 8, bottom: 8 })
+        .position({ y: '100%' })
+        .translate({ y: -80 }) // 放在底部上方
+      }
     }
   }
 

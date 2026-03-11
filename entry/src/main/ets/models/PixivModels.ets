@@ -92,6 +92,14 @@ export interface PixivNovel {
   cacheStatus: CacheStatus; // 缓存状态
   cachedAt?: string;        // 缓存完成时间（ISO8601格式）
   fullText?: string;        // 正文内容（仅 cacheStatus === CACHED 时有值）
+
+  // --- 翻译相关字段（新增）---
+  titleTranslated?: string;      // 翻译后的标题
+  hasTitleTranslation?: boolean; // 是否有标题翻译
+  fullTextTranslated?: string;   // 翻译后的全文
+  hasFullTranslation?: boolean;  // 是否有全文翻译
+  translationProgress?: number;  // 翻译进度 0-100
+  translationStatus?: 'none' | 'in_progress' | 'completed' | 'failed'; // 翻译状态
 }
 
 // ========================================

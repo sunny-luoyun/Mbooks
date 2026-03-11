@@ -4,7 +4,8 @@ import { SettingsService } from '../../services/SettingsService';
 import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
 import { getPixivService } from '../../services/PixivService';
-import { saveSessionId, clearSessionId } from '../../utils/PreferencesUtil';
+import { saveSessionId, clearSessionId, saveDeepSeekApiKey, clearDeepSeekApiKey } from '../../utils/PreferencesUtil';
+import { getDeepSeekService } from '../../services/DeepSeekService';
 
 interface ColorConfig {
   pageBg: string;
@@ -59,6 +60,11 @@ export struct CrawlerSettings {
   @StorageLink('pixivSessionId') pixivSessionId: string = '';
   @State showCookieText: boolean = false;
   @State cookieCheckState: string = 'idle';
+
+  // Deepseek key
+  @StorageLink('deepseekApiKey') deepseekApiKey: string = '';
+  @State showApiKeyText: boolean = false;
+  @State apiKeyCheckState: string = 'idle'; // 'idle', 'checking', 'ok', 'fail'
 
   private settingsService: SettingsService | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -185,6 +191,35 @@ export struct CrawlerSettings {
     this.cookieCheckState = 'idle';
     clearSessionId();
     promptAction.showToast({ message: 'Cookie 已清除' });
+  }
+
+  // 添加验证方法
+  private async checkApiKeyValidity(): Promise<void> {
+    if (!this.deepseekApiKey.trim()) {
+      promptAction.showToast({ message: '请先填入 API 密钥' });
+      return;
+    }
+
+    this.apiKeyCheckState = 'checking';
+
+    // 简单测试：翻译一个短句
+    const service = getDeepSeekService();
+    const result = await service.translateText('こんにちは', true);
+
+    if (result.success) {
+      this.apiKeyCheckState = 'ok';
+      promptAction.showToast({ message: '✅ API 密钥有效' });
+    } else {
+      this.apiKeyCheckState = 'fail';
+      promptAction.showToast({ message: `❌ ${result.error || '验证失败'}` });
+    }
+  }
+
+  private clearApiKey(): void {
+    this.deepseekApiKey = '';
+    this.apiKeyCheckState = 'idle';
+    clearDeepSeekApiKey();  // 持久化清除
+    promptAction.showToast({ message: 'API 密钥已清除' });
   }
 
   // ─────────────────────────────────────────────
@@ -381,6 +416,115 @@ export struct CrawlerSettings {
   }
 
   @Builder
+  DeepSeekApiKeyCard() {
+    Column() {
+      // 标题行
+      Row() {
+        Row() {
+          Text('DeepSeek API 密钥')
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.getColors().primaryText)
+
+          if (this.apiKeyCheckState === 'ok') {
+            Text(' ●').fontSize(12).fontColor('#52C41A')
+          } else if (this.apiKeyCheckState === 'fail') {
+            Text(' ●').fontSize(12).fontColor('#FF4D4F')
+          } else if (this.deepseekApiKey.length > 0 && this.apiKeyCheckState === 'idle') {
+            Text(' ●').fontSize(12).fontColor('#FAAD14')
+          }
+        }.alignItems(VerticalAlign.Center)
+
+        Blank()
+
+        Text(this.showApiKeyText ? '隐藏' : '显示')
+          .fontSize(13)
+          .fontColor(this.getColors().accentText)
+          .onClick((): void => {
+            this.showApiKeyText = !this.showApiKeyText;
+          })
+      }
+      .width('100%')
+      .margin({ bottom: 10 })
+
+      // 输入框
+      TextInput({
+        text: this.deepseekApiKey,
+        placeholder: '粘贴 DeepSeek API 密钥...'
+      })
+        .width('100%')
+        .height(44)
+        .fontSize(13)
+        .fontColor(this.getColors().primaryText)
+        .placeholderColor(this.getColors().tertiaryText)
+        .backgroundColor(this.getColors().pageBg)
+        .borderRadius(8)
+        .padding({ left: 12, right: 12 })
+        .border({
+          width: 1,
+          color: this.deepseekApiKey.length === 0
+            ? this.getColors().divider
+            : this.apiKeyCheckState === 'ok'
+              ? '#52C41A'
+              : this.apiKeyCheckState === 'fail'
+                ? '#FF4D4F'
+                : this.getColors().accentText,
+          radius: 8
+        })
+        .type(this.showApiKeyText ? InputType.Normal : InputType.Password)
+        .onChange((val: string): void => {
+          this.deepseekApiKey = val;
+          this.apiKeyCheckState = 'idle';
+          saveDeepSeekApiKey(val);  // 持久化到磁盘
+        })
+
+      // 操作按钮行
+      Row() {
+        Button(this.apiKeyCheckState === 'checking' ? '验证中...' : '验证密钥')
+          .fontSize(13)
+          .height(36)
+          .layoutWeight(1)
+          .fontColor('#FFFFFF')
+          .backgroundColor(this.getColors().accentText)
+          .borderRadius(8)
+          .enabled(this.apiKeyCheckState !== 'checking' && this.deepseekApiKey.length > 0)
+          .onClick((): void => { this.checkApiKeyValidity(); })
+
+        if (this.deepseekApiKey.length > 0) {
+          Button('清除')
+            .fontSize(13)
+            .height(36)
+            .fontColor(this.getColors().dangerText)
+            .backgroundColor(Color.Transparent)
+            .borderRadius(8)
+            .margin({ left: 8 })
+            .onClick((): void => { this.clearApiKey(); })
+        }
+      }
+      .width('100%')
+      .margin({ top: 12 })
+
+      // 底部说明
+      Text('前往 deepseek.com 注册获取 API 密钥，用于翻译日文小说标题和内容')
+        .fontSize(11)
+        .fontColor(this.getColors().hintText)
+        .margin({ top: 10 })
+        .lineHeight(18)
+
+      // 价格提示
+      Text('约 ¥0.002 / 1K 字符（仅供参考，以官方价格为准）')
+        .fontSize(10)
+        .fontColor(this.getColors().tertiaryText)
+        .margin({ top: 4 })
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor(this.getColors().cardBg)
+    .borderRadius(12)
+    .margin({ bottom: 12 })
+  }
+
+  @Builder
   ToggleItemBuilder(title: string, desc: string, isOn: boolean, onChange: (val: boolean) => void) {
     Row() {
       Column() {
@@ -429,13 +573,15 @@ export struct CrawlerSettings {
         // Pixiv Cookie 卡片
         this.PixivCookieCard()
 
+        this.DeepSeekApiKeyCard()
+
         // 1. 单次最大页数
         Column() {
           this.MaxPagesHeader()  // ✅ 改用独立 @Builder，内部直接读 @State
           Slider({
             value: this.localConfig.maxPagesPerRun,
             min: 1,
-            max: 300,
+            max: 600,
             step: 1
           })
             .width('100%')

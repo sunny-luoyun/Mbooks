@@ -172,8 +172,7 @@ export struct SearchPage {
   // ========================================
   // 生命周期
   // ========================================
-
-  aboutToAppear(): void {
+  async aboutToAppear(): Promise<void> {
     this.crawler = new CrawlerService(getContext(this) as common.UIAbilityContext)
     const ctx = getContext(this) as common.UIAbilityContext;
     this.colorMode = ctx.config?.colorMode || 0;
@@ -186,7 +185,7 @@ export struct SearchPage {
       onMemoryLevel: (_level: number) => {}
     });
 
-    pixivCacheDB.init(ctx);
+    await pixivCacheDB.init(ctx);
     PersistentStorage.persistProp(HISTORY_KEY, '[]');
     this.historyList = SearchHistoryManager.getHistory();
     this.inputValue  = this.searchKey;
@@ -382,27 +381,31 @@ export struct SearchPage {
 
   // ── 缓存操作（供两个 Pixiv Tab 共用）──
   private async cacheNovel(novel: PixivNovel): Promise<void> {
-    if (this.cachingIds.has(novel.id)) return
-    const newSet = new Set<string>()
-    this.cachingIds.forEach(id => newSet.add(id))
-    newSet.add(novel.id)
-    this.cachingIds = newSet
-    this.updateNovelStatus(novel.id, CacheStatus.CACHING)
-    await pixivCacheDB.markCaching(novel.id)
+    if (this.cachingIds.has(novel.id)) return;
 
-    const result = await this.pixivService.fetchNovelText(novel.id)
+    // ★ 确保元数据已存在（幂等操作）
+    await pixivCacheDB.saveNovelMeta(novel);
+
+    const newSet = new Set<string>();
+    this.cachingIds.forEach(id => newSet.add(id));
+    newSet.add(novel.id);
+    this.cachingIds = newSet;
+    this.updateNovelStatus(novel.id, CacheStatus.CACHING);
+    await pixivCacheDB.markCaching(novel.id);
+
+    const result = await this.pixivService.fetchNovelText(novel.id);
     if (result.success && result.data) {
-      await pixivCacheDB.saveFullText(novel.id, result.data)
-      this.updateNovelStatusWithText(novel.id, CacheStatus.CACHED, result.data)
-      promptAction.showToast({ message: `《${novel.title}》缓存成功` })
+      await pixivCacheDB.saveFullText(novel.id, result.data);
+      this.updateNovelStatusWithText(novel.id, CacheStatus.CACHED, result.data);
+      promptAction.showToast({ message: `《${novel.title}》缓存成功` });
     } else {
-      await pixivCacheDB.markCacheFail(novel.id)
-      this.updateNovelStatus(novel.id, CacheStatus.CACHE_FAIL)
-      promptAction.showToast({ message: result.error ?? '缓存失败' })
+      await pixivCacheDB.markCacheFail(novel.id);
+      this.updateNovelStatus(novel.id, CacheStatus.CACHE_FAIL);
+      promptAction.showToast({ message: result.error ?? '缓存失败' });
     }
-    const next = new Set<string>()
-    this.cachingIds.forEach(id => { if (id !== novel.id) next.add(id) })
-    this.cachingIds = next
+    const next = new Set<string>();
+    this.cachingIds.forEach(id => { if (id !== novel.id) next.add(id); });
+    this.cachingIds = next;
   }
 
   private async deleteCache(novel: PixivNovel): Promise<void> {
@@ -952,11 +955,28 @@ export struct SearchPage {
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             .constraintSize({ maxWidth: '40%' }).margin({ right: 6 })
         }
-        Text(novel.title)
+        // 标题：如果有翻译，显示翻译后的标题
+        Text(novel.hasTitleTranslation && novel.titleTranslated
+          ? novel.titleTranslated
+          : novel.title)
           .fontSize(15).fontWeight(FontWeight.Medium)
-          .fontColor(this.getColors().primaryText)
+          .fontColor(novel.hasTitleTranslation
+            ? this.getColors().accentText
+            : this.getColors().primaryText)
           .layoutWeight(1).maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        // 翻译标记
+        if (novel.hasTitleTranslation) {
+          Text('译')
+            .fontSize(9)
+            .fontColor('#52C41A')
+            .backgroundColor('#F6FFED')
+            .borderRadius(2)
+            .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+            .margin({ left: 4 })
+        }
+
         this.CacheStatusBadge(novel.cacheStatus)
       }
       .width('100%').alignItems(VerticalAlign.Top)

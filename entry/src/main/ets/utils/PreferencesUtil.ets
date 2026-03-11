@@ -20,6 +20,11 @@ export async function initPreferences(ctx: common.UIAbilityContext): Promise<voi
     const saved = await _prefsInstance.get(KEY_SESSION, '') as string;
     AppStorage.setOrCreate(KEY_SESSION, saved);
     console.info(`[PreferencesUtil] 已从磁盘恢复 PHPSESSID: ${saved ? saved.substring(0, 8) + '...' : '(空)'}`);
+
+    const savedKey = await _prefsInstance.get(KEY_DEEPSEEK, '') as string;
+    AppStorage.setOrCreate(KEY_DEEPSEEK, savedKey);
+    console.info(`[PreferencesUtil] 已从磁盘恢复 DeepSeek Key: ${savedKey ? savedKey.substring(0, 6) + '...' : '(空)'}`);
+
   } catch (e) {
     console.error('[PreferencesUtil] 初始化失败: ' + JSON.stringify(e));
   }
@@ -59,4 +64,33 @@ export function getSessionId(): string {
 export async function clearSessionId(): Promise<void> {
   await saveSessionId('');
   console.info('[PreferencesUtil] PHPSESSID 已清除');
+}
+
+// ── 新增：DeepSeek API Key 的持久化常量 ──
+const KEY_DEEPSEEK = 'deepseekApiKey';
+
+/**
+ * 保存 DeepSeek API Key（写盘 + 同步 AppStorage）
+ */
+export async function saveDeepSeekApiKey(apiKey: string): Promise<void> {
+  try {
+    AppStorage.setOrCreate(KEY_DEEPSEEK, apiKey);
+    if (_prefsInstance) {
+      await _prefsInstance.put(KEY_DEEPSEEK, apiKey);
+      await _prefsInstance.flush();
+      console.info('[PreferencesUtil] DeepSeek API Key 已持久化到磁盘');
+    } else {
+      console.warn('[PreferencesUtil] Preferences 未初始化，仅写入 AppStorage');
+    }
+  } catch (e) {
+    console.error('[PreferencesUtil] saveDeepSeekApiKey 失败: ' + JSON.stringify(e));
+  }
+}
+
+/**
+ * 清除 DeepSeek API Key
+ */
+export async function clearDeepSeekApiKey(): Promise<void> {
+  await saveDeepSeekApiKey('');
+  console.info('[PreferencesUtil] DeepSeek API Key 已清除');
 }
