@@ -113,6 +113,7 @@ export interface PixivSearchParams {
   mode?: PixivContentMode;            // 内容分级，默认 ALL
   searchMode?: PixivSearchMode;
   includeTranslationTags?: boolean;   // 是否匹配翻译后的标签
+  searchType?: 'novel' | 'user';
 }
 
 // ========================================
@@ -125,6 +126,31 @@ export interface PixivSearchResult {
   currentPage: number;    // 当前页码
   hasMore: boolean;       // 是否有下一页
   keyword: string;        // 本次搜索的关键词（方便结果回显）
+}
+
+// ========================================
+// 新增：Pixiv 作者信息接口
+// ========================================
+
+export interface PixivAuthor {
+  id: string;           // 作者UID
+  name: string;         // 作者名
+  account: string;      // 账号名
+  avatarUrl: string;    // 头像URL
+  isFollowed: boolean;  // 是否已关注
+  novelCount?: number;  // 小说数量（搜索接口可能返回）
+  illustCount?: number; // 插画数量
+}
+// ========================================
+// 新增：作者搜索结果
+// ========================================
+
+export interface PixivAuthorSearchResult {
+  authors: PixivAuthor[];  // 作者列表
+  total: number;
+  currentPage: number;
+  hasMore: boolean;
+  keyword: string;
 }
 
 // ========================================

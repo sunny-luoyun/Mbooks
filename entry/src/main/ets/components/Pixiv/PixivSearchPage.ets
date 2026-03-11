@@ -4,6 +4,7 @@ import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
 import {
   PixivNovel,
+  PixivAuthor,
   SearchSource,
   CacheStatus,
   PixivSearchParams,
@@ -19,36 +20,41 @@ import {
 import { getPixivService, SearchThrottle } from '../../services/PixivService';
 import { pixivCacheDB } from '../../database/PixivCacheDB';
 
-const HISTORY_KEY = 'pixiv_search_history';
+const HISTORY_KEY_NOVEL = 'pixiv_search_history_novel';
+const HISTORY_KEY_AUTHOR = 'pixiv_search_history_author';
 const MAX_HISTORY = 20;
 
 class SearchHistoryManager {
-  static getHistory(): string[] {
+  static getHistory(isAuthor: boolean): string[] {
+    const key = isAuthor ? HISTORY_KEY_AUTHOR : HISTORY_KEY_NOVEL;
     try {
-      const raw = AppStorage.get<string>(HISTORY_KEY) ?? '[]';
+      const raw = AppStorage.get<string>(key) ?? '[]';
       return JSON.parse(raw) as string[];
     } catch {
       return [];
     }
   }
 
-  static addHistory(keyword: string): void {
+  static addHistory(keyword: string, isAuthor: boolean): void {
+    const key = isAuthor ? HISTORY_KEY_AUTHOR : HISTORY_KEY_NOVEL;
     if (!keyword.trim()) return;
-    const list = SearchHistoryManager.getHistory();
+    const list = SearchHistoryManager.getHistory(isAuthor);
     const filtered = list.filter(k => k !== keyword);
     filtered.unshift(keyword);
     const trimmed = filtered.slice(0, MAX_HISTORY);
-    AppStorage.setOrCreate(HISTORY_KEY, JSON.stringify(trimmed));
+    AppStorage.setOrCreate(key, JSON.stringify(trimmed));
   }
 
-  static removeHistory(keyword: string): void {
-    const list = SearchHistoryManager.getHistory();
+  static removeHistory(keyword: string, isAuthor: boolean): void {
+    const key = isAuthor ? HISTORY_KEY_AUTHOR : HISTORY_KEY_NOVEL;
+    const list = SearchHistoryManager.getHistory(isAuthor);
     const filtered = list.filter(k => k !== keyword);
-    AppStorage.setOrCreate(HISTORY_KEY, JSON.stringify(filtered));
+    AppStorage.setOrCreate(key, JSON.stringify(filtered));
   }
 
-  static clearHistory(): void {
-    AppStorage.setOrCreate(HISTORY_KEY, '[]');
+  static clearHistory(isAuthor: boolean): void {
+    const key = isAuthor ? HISTORY_KEY_AUTHOR : HISTORY_KEY_NOVEL;
+    AppStorage.setOrCreate(key, '[]');
   }
 }
 
@@ -70,6 +76,8 @@ interface SearchColors {
   divider: string;
   historyPanelBg: string;
   historyDeleteText: string;
+  toggleBg: string;        // 新增：切换按钮背景
+  toggleActive: string;    // 新增：切换按钮激活色
 }
 
 function getSearchColors(mode: number): SearchColors {
@@ -92,6 +100,8 @@ function getSearchColors(mode: number): SearchColors {
     divider: isDark ? '#2A2A2A' : '#E5E5E5',
     historyPanelBg: isDark ? '#1E1E1E' : '#FFFFFF',
     historyDeleteText: isDark ? '#666666' : '#BBBBBB',
+    toggleBg: isDark ? '#3A3A3A' : '#E5E5E5',
+    toggleActive: '#FA8C16',
   };
 }
 
@@ -99,6 +109,7 @@ function getSearchColors(mode: number): SearchColors {
 export struct PixivSearchPage {
   @State searchKey: string = ""
   @State pixivResults: PixivNovel[] = []
+  @State authorResults: PixivAuthor[] = []  // 新增：作者搜索结果
   @State isPixivSearching: boolean = false
   @State pixivErrorMsg: string = ''
   @State pixivCurrentPage: number = 1
@@ -106,6 +117,10 @@ export struct PixivSearchPage {
   @State pixivTotal: number = 0
   @State colorMode: number = 0;
   @State cachingIds: Set<string> = new Set()
+
+  // 新增：搜索类型切换 0=小说, 1=作者
+  @State searchType: number = 0
+
   @StorageProp('pixivSortOrder') pixivSortOrder: string = PixivSortOrder.DATE_DESC
   @StorageProp('pixivContentMode') pixivContentMode: string = PixivContentMode.ALL
 
@@ -131,11 +146,17 @@ export struct PixivSearchPage {
     });
 
     await pixivCacheDB.init(ctx);
-    PersistentStorage.persistProp(HISTORY_KEY, '[]');
-    this.historyList = SearchHistoryManager.getHistory();
 
-    // 默认加载已缓存的内容
-    this.loadCachedNovels();
+    // 分别持久化两种搜索历史
+    PersistentStorage.persistProp(HISTORY_KEY_NOVEL, '[]');
+    PersistentStorage.persistProp(HISTORY_KEY_AUTHOR, '[]');
+
+    this.historyList = SearchHistoryManager.getHistory(this.isAuthorSearch());
+
+    // 默认加载已缓存的内容（仅小说模式）
+    if (!this.isAuthorSearch()) {
+      this.loadCachedNovels();
+    }
   }
 
   aboutToDisappear(): void {
@@ -149,25 +170,49 @@ export struct PixivSearchPage {
     return getSearchColors(this.colorMode);
   }
 
+  // 判断当前是否为作者搜索模式
+  private isAuthorSearch(): boolean {
+    return this.searchType === 1;
+  }
+
   private refreshHistory(): void {
-    this.historyList = SearchHistoryManager.getHistory();
+    this.historyList = SearchHistoryManager.getHistory(this.isAuthorSearch());
   }
 
   private selectHistory(keyword: string): void {
     this.inputValue = keyword;
     this.searchKey = keyword;
     this.showHistory = false;
-    this.doPixivSearch(keyword, 1);
+    if (this.isAuthorSearch()) {
+      this.doAuthorSearch(keyword, 1);
+    } else {
+      this.doPixivSearch(keyword, 1);
+    }
   }
 
   private deleteHistoryItem(keyword: string): void {
-    SearchHistoryManager.removeHistory(keyword);
+    SearchHistoryManager.removeHistory(keyword, this.isAuthorSearch());
     this.refreshHistory();
   }
 
   private clearAllHistory(): void {
-    SearchHistoryManager.clearHistory();
+    SearchHistoryManager.clearHistory(this.isAuthorSearch());
     this.refreshHistory();
+  }
+
+  // 切换搜索类型
+  private switchSearchType(type: number): void {
+    if (this.searchType === type) return;
+    this.searchType = type;
+    this.inputValue = "";
+    this.searchKey = "";
+    this.pixivResults = [];
+    this.authorResults = [];
+    this.refreshHistory();
+
+    if (type === 0) {
+      this.loadCachedNovels();
+    }
   }
 
   private async loadCachedNovels(): Promise<void> {
@@ -177,6 +222,7 @@ export struct PixivSearchPage {
     this.pixivHasMore = false
   }
 
+  // 搜索小说（原有逻辑）
   private async doPixivSearch(keyword: string, page: number): Promise<void> {
     if (!keyword.trim()) {
       this.loadCachedNovels();
@@ -197,7 +243,7 @@ export struct PixivSearchPage {
       if (cached.length > 0) this.pixivResults = cached
     }
 
-    SearchHistoryManager.addHistory(keyword.trim());
+    SearchHistoryManager.addHistory(keyword.trim(), false);
     this.refreshHistory();
 
     const params: PixivSearchParams = {
@@ -228,6 +274,65 @@ export struct PixivSearchPage {
     this.isPixivSearching = false
   }
 
+  // 新增：搜索作者
+  private async doAuthorSearch(keyword: string, page: number): Promise<void> {
+    if (!keyword.trim()) {
+      this.authorResults = [];
+      return;
+    }
+
+    if (!this.throttle.canSearch()) {
+      promptAction.showToast({ message: `请稍候 ${this.throttle.remainingMs()}ms 后再搜索` })
+      return
+    }
+
+    this.isPixivSearching = true
+    this.pixivErrorMsg = ''
+    if (page === 1) this.authorResults = []
+
+    SearchHistoryManager.addHistory(keyword.trim(), true);
+    this.refreshHistory();
+
+    const result = await this.pixivService.searchAuthors(keyword, page)
+
+    // 🔍 超详细的调试日志
+    console.info(`[SearchPage] ========== 作者搜索调试 ==========`)
+    console.info(`[SearchPage] success: ${result.success}`)
+    console.info(`[SearchPage] error: ${result.error}`)
+    console.info(`[SearchPage] data 是否存在: ${!!result.data}`)
+
+    if (result.data) {
+      console.info(`[SearchPage] authors 数组长度: ${result.data.authors?.length || 0}`)
+      console.info(`[SearchPage] total: ${result.data.total}`)
+      console.info(`[SearchPage] hasMore: ${result.data.hasMore}`)
+      console.info(`[SearchPage] 第一个作者: ${JSON.stringify(result.data.authors?.[0]) || '无'}`)
+    }
+
+    if (result.success && result.data) {
+      if (page === 1) {
+        this.authorResults = result.data.authors
+      } else {
+        this.authorResults = this.authorResults.concat(result.data.authors)
+      }
+      this.pixivTotal = result.data.total
+      this.pixivHasMore = result.data.hasMore
+      this.pixivCurrentPage = page
+
+      // 如果结果为空但success为true，提示用户
+      if (result.data.authors.length === 0) {
+        console.warn(`[SearchPage] API返回成功但作者列表为空`)
+        promptAction.showToast({ message: '未找到相关作者' })
+      }
+    } else {
+      this.pixivErrorMsg = result.error ?? '搜索失败'
+      console.error(`[SearchPage] 搜索失败: ${this.pixivErrorMsg}`)
+      if (this.authorResults.length === 0) {
+        promptAction.showToast({ message: this.pixivErrorMsg })
+      }
+    }
+    this.isPixivSearching = false
+  }
+
   private async mergeCacheStatus(novels: PixivNovel[]): Promise<PixivNovel[]> {
     return Promise.all(
       novels.map(async (novel) => {
@@ -242,9 +347,13 @@ export struct PixivSearchPage {
     )
   }
 
-  private loadMorePixiv(): void {
-    if (!this.pixivHasMore || this.isPixivSearching) return
-    this.doPixivSearch(this.searchKey, this.pixivCurrentPage + 1)
+  private loadMore(): void {
+    if (!this.pixivHasMore || this.isPixivSearching) return;
+    if (this.isAuthorSearch()) {
+      this.doAuthorSearch(this.searchKey, this.pixivCurrentPage + 1);
+    } else {
+      this.doPixivSearch(this.searchKey, this.pixivCurrentPage + 1);
+    }
   }
 
   private async cacheNovel(novel: PixivNovel): Promise<void> {
@@ -324,6 +433,18 @@ export struct PixivSearchPage {
     })
   }
 
+  // 新增：跳转到作者详情页
+  private openAuthorPage(author: PixivAuthor): void {
+    router.pushUrl({
+      url: 'pages/PixivAuthorPage',
+      params: {
+        authorId: author.id,
+        authorName: author.name,
+        authorAvatar: author.avatarUrl
+      }
+    })
+  }
+
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
   build() {
@@ -340,11 +461,42 @@ export struct PixivSearchPage {
             bottom: 16
           })
 
+        // 新增：搜索类型切换开关
+        Row() {
+          // 搜索小说按钮
+          Column() {
+            Text('🔍 小说')
+              .fontSize(14)
+              .fontWeight(this.searchType === 0 ? FontWeight.Bold : FontWeight.Normal)
+              .fontColor(this.searchType === 0 ? '#FFFFFF' : this.getColors().secondaryText)
+              .padding({ left: 20, right: 20, top: 8, bottom: 8 })
+          }
+          .backgroundColor(this.searchType === 0 ? this.getColors().toggleActive : this.getColors().toggleBg)
+          .borderRadius(20)
+          .onClick(() => this.switchSearchType(0))
+
+          // 搜索作者按钮
+          Column() {
+            Text('👤 作者')
+              .fontSize(14)
+              .fontWeight(this.searchType === 1 ? FontWeight.Bold : FontWeight.Normal)
+              .fontColor(this.searchType === 1 ? '#FFFFFF' : this.getColors().secondaryText)
+              .padding({ left: 20, right: 20, top: 8, bottom: 8 })
+          }
+          .backgroundColor(this.searchType === 1 ? this.getColors().toggleActive : this.getColors().toggleBg)
+          .borderRadius(20)
+          .margin({ left: 12 })
+          .onClick(() => this.switchSearchType(1))
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, bottom: 12 })
+        .justifyContent(FlexAlign.Center)
+
         // 搜索栏
         Row() {
           TextInput({
             text: this.inputValue,
-            placeholder: '搜索 Pixiv 小说标题、作者或标签...'
+            placeholder: this.isAuthorSearch() ? '搜索 Pixiv 作者...' : '搜索 Pixiv 小说标题、作者或标签...'
           })
             .layoutWeight(1)
             .height(40)
@@ -356,13 +508,17 @@ export struct PixivSearchPage {
             .padding({ left: 16, right: 16 })
             .onChange((value: string): void => { this.inputValue = value; })
             .onFocus((): void => {
-              this.historyList = SearchHistoryManager.getHistory();
+              this.historyList = SearchHistoryManager.getHistory(this.isAuthorSearch());
               if (this.historyList.length > 0) this.showHistory = true;
             })
             .onSubmit((): void => {
               this.showHistory = false;
               this.searchKey = this.inputValue;
-              this.doPixivSearch(this.inputValue, 1);
+              if (this.isAuthorSearch()) {
+                this.doAuthorSearch(this.inputValue, 1);
+              } else {
+                this.doPixivSearch(this.inputValue, 1);
+              }
             })
 
           Button('搜索')
@@ -376,7 +532,11 @@ export struct PixivSearchPage {
             .onClick((): void => {
               this.showHistory = false;
               this.searchKey = this.inputValue;
-              this.doPixivSearch(this.inputValue, 1);
+              if (this.isAuthorSearch()) {
+                this.doAuthorSearch(this.inputValue, 1);
+              } else {
+                this.doPixivSearch(this.inputValue, 1);
+              }
             })
         }
         .width('92%')
@@ -384,14 +544,19 @@ export struct PixivSearchPage {
         .margin({ left: '4%', right: '4%', bottom: 12 })
 
         // 统计信息
-        if (this.pixivResults.length > 0 || this.pixivTotal > 0) {
+        if ((this.pixivResults.length > 0 || this.authorResults.length > 0) || this.pixivTotal > 0) {
           Row() {
-            Text(this.searchKey
-              ? `共 ${this.pixivTotal} 条结果，已加载 ${this.pixivResults.length} 条`
-              : `离线缓存 ${this.pixivResults.length} 本`)
-              .fontSize(12).fontColor(this.getColors().tertiaryText)
+            if (this.isAuthorSearch()) {
+              Text(`共找到 ${this.pixivTotal} 位作者，显示 ${this.authorResults.length} 位`)
+                .fontSize(12).fontColor(this.getColors().tertiaryText)
+            } else {
+              Text(this.searchKey
+                ? `共 ${this.pixivTotal} 条结果，已加载 ${this.pixivResults.length} 条`
+                : `离线缓存 ${this.pixivResults.length} 本`)
+                .fontSize(12).fontColor(this.getColors().tertiaryText)
+            }
             Blank()
-            if (this.pixivErrorMsg && this.pixivResults.length > 0) {
+            if (this.pixivErrorMsg && (this.pixivResults.length > 0 || this.authorResults.length > 0)) {
               Text('⚠️ 网络异常，显示缓存').fontSize(11).fontColor('#FAAD14')
             }
             if (this.searchKey) {
@@ -401,62 +566,32 @@ export struct PixivSearchPage {
                 .onClick((): void => {
                   this.inputValue = ""
                   this.searchKey = ""
-                  this.loadCachedNovels()
+                  if (this.isAuthorSearch()) {
+                    this.authorResults = [];
+                  } else {
+                    this.loadCachedNovels()
+                  }
                 })
             }
           }
           .width('92%').padding({ top: 10, bottom: 6 })
         }
 
-        // 内容列表
-        if (this.isPixivSearching && this.pixivResults.length === 0) {
+        // 内容列表 - 根据搜索类型显示不同内容
+        if (this.isPixivSearching &&
+          (this.isAuthorSearch() ? this.authorResults.length === 0 : this.pixivResults.length === 0)) {
           Column() {
             LoadingProgress().width(48).height(48).color(this.getColors().accentText)
-            Text('正在搜索 Pixiv...')
+            Text(this.isAuthorSearch() ? '正在搜索作者...' : '正在搜索 Pixiv...')
               .fontSize(14).fontColor(this.getColors().secondaryText).margin({ top: 12 })
           }
           .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-        } else if (this.pixivResults.length > 0) {
-          List({ space: 10 }) {
-            ForEach(this.pixivResults, (novel: PixivNovel): void => {
-              ListItem() { this.PixivNovelCard(novel) }
-              .width('92%')
-            }, (novel: PixivNovel): string => `${novel.id}_${novel.cacheStatus}`)
-
-            ListItem() {
-              if (this.pixivHasMore) {
-                Button(this.isPixivSearching ? '加载中...' : '加载更多')
-                  .width('100%').height(44).fontSize(14)
-                  .fontColor(this.getColors().accentText)
-                  .backgroundColor(this.getColors().cardBg)
-                  .borderRadius(12)
-                  .enabled(!this.isPixivSearching)
-                  .onClick((): void => { this.loadMorePixiv() })
-              } else if (this.pixivResults.length > 0) {
-                Text('— 已加载全部结果 —')
-                  .fontSize(12).fontColor(this.getColors().tertiaryText)
-                  .width('100%').textAlign(TextAlign.Center)
-                  .padding({ top: 8, bottom: 8 })
-              }
-            }
-            .width('92%')
-          }
-          .width('100%').layoutWeight(1)
-          .alignListItem(ListItemAlign.Center)
-          .edgeEffect(EdgeEffect.Spring)
-        } else if (!this.isPixivSearching) {
-          Column() {
-            Text('🎨').fontSize(60).margin({ bottom: 16 })
-            Text(this.searchKey
-              ? (this.pixivErrorMsg ? '网络错误，无法搜索' : '未找到相关结果')
-              : '输入关键词后点击搜索，或查看离线缓存')
-              .fontSize(16).fontColor(this.getColors().emptyText)
-            Text(this.searchKey
-              ? (this.pixivErrorMsg ? '请检查网络或 Cookie 设置' : '试试其他关键词')
-              : '已缓存的小说可在无网络时阅读')
-              .fontSize(12).fontColor(this.getColors().emptySubText).margin({ top: 8 })
-          }
-          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+        } else if (this.isAuthorSearch()) {
+          // 作者列表
+          this.AuthorListView()
+        } else {
+          // 小说列表（原有逻辑）
+          this.NovelListView()
         }
       }
       .width('100%')
@@ -472,6 +607,186 @@ export struct PixivSearchPage {
     }
     .width('100%')
     .height('100%')
+  }
+
+  // 新增：作者列表视图
+  @Builder AuthorListView() {
+    if (this.authorResults.length > 0) {
+      List({ space: 10 }) {
+        ForEach(this.authorResults, (author: PixivAuthor): void => {
+          ListItem() { this.AuthorCard(author) }
+          .width('92%')
+        }, (author: PixivAuthor): string => author.id)
+
+        ListItem() {
+          if (this.pixivHasMore) {
+            Button(this.isPixivSearching ? '加载中...' : '加载更多')
+              .width('100%').height(44).fontSize(14)
+              .fontColor(this.getColors().accentText)
+              .backgroundColor(this.getColors().cardBg)
+              .borderRadius(12)
+              .enabled(!this.isPixivSearching)
+              .onClick((): void => { this.loadMore() })
+          } else if (this.authorResults.length > 0) {
+            Text('— 已加载全部作者 —')
+              .fontSize(12).fontColor(this.getColors().tertiaryText)
+              .width('100%').textAlign(TextAlign.Center)
+              .padding({ top: 8, bottom: 8 })
+          }
+        }
+        .width('92%')
+      }
+      .width('100%').layoutWeight(1)
+      .alignListItem(ListItemAlign.Center)
+      .edgeEffect(EdgeEffect.Spring)
+    } else if (!this.isPixivSearching) {
+      Column() {
+        Text('👤').fontSize(60).margin({ bottom: 16 })
+        Text(this.searchKey ? '未找到相关作者' : '输入关键词搜索作者')
+          .fontSize(16).fontColor(this.getColors().emptyText)
+        Text(this.searchKey ? '试试其他关键词' : '搜索作者查看其所有作品')
+          .fontSize(12).fontColor(this.getColors().emptySubText).margin({ top: 8 })
+      }
+      .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+    }
+  }
+
+  // 新增：作者卡片
+  @Builder AuthorCard(author: PixivAuthor) {
+    Row() {
+      // 头像
+      Column() {
+        if (author.avatarUrl) {
+          Image(author.avatarUrl)
+            .width(50)
+            .height(50)
+            .borderRadius(25)
+            .objectFit(ImageFit.Cover)
+        } else {
+          Column() {
+            Text('👤').fontSize(24)
+          }
+          .width(50)
+          .height(50)
+          .borderRadius(25)
+          .backgroundColor(this.getColors().searchBg)
+          .justifyContent(FlexAlign.Center)
+        }
+      }
+      .margin({ right: 12 })
+
+      // 信息
+      Column() {
+        Row() {
+          Text(author.name)
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.getColors().primaryText)
+            .layoutWeight(1)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+          if (author.isFollowed) {
+            Text('已关注')
+              .fontSize(10)
+              .fontColor('#52C41A')
+              .backgroundColor(this.getColors().cachedBadgeBg)
+              .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+              .borderRadius(4)
+              .margin({ left: 8 })
+          }
+        }
+        .width('100%')
+
+        Text(`@${author.account}`)
+          .fontSize(12)
+          .fontColor(this.getColors().tertiaryText)
+          .margin({ top: 4 })
+          .width('100%')
+
+        if (author.novelCount !== undefined || author.illustCount !== undefined) {
+          Row() {
+            if (author.novelCount !== undefined) {
+              Text(`${author.novelCount} 部小说`)
+                .fontSize(11)
+                .fontColor(this.getColors().accentText)
+                .backgroundColor(this.getColors().tagBg)
+                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                .borderRadius(4)
+                .margin({ right: 8 })
+            }
+            if (author.illustCount !== undefined) {
+              Text(`${author.illustCount} 张插画`)
+                .fontSize(11)
+                .fontColor(this.getColors().tagText)
+                .backgroundColor(this.getColors().tagBg)
+                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                .borderRadius(4)
+            }
+          }
+          .width('100%')
+          .margin({ top: 6 })
+        }
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      // 箭头
+      Text('〉')
+        .fontSize(16)
+        .fontColor(this.getColors().tertiaryText)
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(this.getColors().cardBg)
+    .borderRadius(12)
+    .onClick(() => this.openAuthorPage(author))
+  }
+
+  // 小说列表视图（原有逻辑提取）
+  @Builder NovelListView() {
+    if (this.pixivResults.length > 0) {
+      List({ space: 10 }) {
+        ForEach(this.pixivResults, (novel: PixivNovel): void => {
+          ListItem() { this.PixivNovelCard(novel) }
+          .width('92%')
+        }, (novel: PixivNovel): string => `${novel.id}_${novel.cacheStatus}`)
+
+        ListItem() {
+          if (this.pixivHasMore) {
+            Button(this.isPixivSearching ? '加载中...' : '加载更多')
+              .width('100%').height(44).fontSize(14)
+              .fontColor(this.getColors().accentText)
+              .backgroundColor(this.getColors().cardBg)
+              .borderRadius(12)
+              .enabled(!this.isPixivSearching)
+              .onClick((): void => { this.loadMore() })
+          } else if (this.pixivResults.length > 0) {
+            Text('— 已加载全部结果 —')
+              .fontSize(12).fontColor(this.getColors().tertiaryText)
+              .width('100%').textAlign(TextAlign.Center)
+              .padding({ top: 8, bottom: 8 })
+          }
+        }
+        .width('92%')
+      }
+      .width('100%').layoutWeight(1)
+      .alignListItem(ListItemAlign.Center)
+      .edgeEffect(EdgeEffect.Spring)
+    } else if (!this.isPixivSearching) {
+      Column() {
+        Text('🎨').fontSize(60).margin({ bottom: 16 })
+        Text(this.searchKey
+          ? (this.pixivErrorMsg ? '网络错误，无法搜索' : '未找到相关结果')
+          : '输入关键词后点击搜索，或查看离线缓存')
+          .fontSize(16).fontColor(this.getColors().emptyText)
+        Text(this.searchKey
+          ? (this.pixivErrorMsg ? '请检查网络或 Cookie 设置' : '试试其他关键词')
+          : '已缓存的小说可在无网络时阅读')
+          .fontSize(12).fontColor(this.getColors().emptySubText).margin({ top: 8 })
+      }
+      .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+    }
   }
 
   @Builder HistoryPanel() {
@@ -527,7 +842,7 @@ export struct PixivSearchPage {
     .backgroundColor(this.getColors().historyPanelBg)
     .borderRadius(12)
     .shadow({ radius: 16, color: '#00000022', offsetY: 4 })
-    .position({ x: '4%', y: px2vp(this.statusBarHeight) + 52 + 40 + 8 })
+    .position({ x: '4%', y: px2vp(this.statusBarHeight) + 52 + 80 + 8 })
     .zIndex(999)
     .onClick((): void => {})
   }

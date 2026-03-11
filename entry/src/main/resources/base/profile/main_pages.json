@@ -6,6 +6,7 @@
     "pages/SettingsPage",
     "pages/DetailPage",
     "pages/ReaderPage",
-    "pages/PixivNovelReaderPage"
+    "pages/PixivNovelReaderPage",
+    "pages/PixivAuthorPage"
   ]
 }
