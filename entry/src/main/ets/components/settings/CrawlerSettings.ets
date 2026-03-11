@@ -66,6 +66,10 @@ export struct CrawlerSettings {
   @State showApiKeyText: boolean = false;
   @State apiKeyCheckState: string = 'idle'; // 'idle', 'checking', 'ok', 'fail'
 
+  // DeepSeek 余额
+  @State balanceAmount: string = '';        // 余额数值
+  @State balanceFetchState: string = 'idle'; // 'idle', 'loading', 'ok', 'fail'
+
   private settingsService: SettingsService | null = null;
   private unsubscribe: (() => void) | null = null;
   private configChangeCallback: () => void = () => {};
@@ -220,6 +224,28 @@ export struct CrawlerSettings {
     this.apiKeyCheckState = 'idle';
     clearDeepSeekApiKey();  // 持久化清除
     promptAction.showToast({ message: 'API 密钥已清除' });
+  }
+
+  private async fetchBalance(): Promise<void> {
+    if (!this.deepseekApiKey.trim()) {
+      promptAction.showToast({ message: '请先填入 API 密钥' });
+      return;
+    }
+    this.balanceFetchState = 'loading';
+    try {
+      const service = getDeepSeekService();
+      const result = await service.fetchBalance(this.deepseekApiKey);
+      if (result.success && result.data !== undefined) {
+        this.balanceAmount = result.data;
+        this.balanceFetchState = 'ok';
+      } else {
+        this.balanceFetchState = 'fail';
+        promptAction.showToast({ message: `❌ 获取余额失败：${result.error || '未知错误'}` });
+      }
+    } catch (e) {
+      this.balanceFetchState = 'fail';
+      promptAction.showToast({ message: '网络异常，无法获取余额' });
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -511,11 +537,77 @@ export struct CrawlerSettings {
         .margin({ top: 10 })
         .lineHeight(18)
 
-      // 价格提示
-      Text('约 ¥0.002 / 1K 字符（仅供参考，以官方价格为准）')
-        .fontSize(10)
-        .fontColor(this.getColors().tertiaryText)
-        .margin({ top: 4 })
+      // ── 余额信息栏 ──
+      if (this.deepseekApiKey.length > 0) {
+        Divider()
+          .strokeWidth(1)
+          .color(this.getColors().divider)
+          .margin({ top: 14, bottom: 14 })
+
+        Row() {
+          Column() {
+            Text('账户余额')
+              .fontSize(13)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.getColors().primaryText)
+
+            if (this.balanceFetchState === 'loading') {
+              Text('查询中...')
+                .fontSize(12)
+                .fontColor(this.getColors().tertiaryText)
+                .margin({ top: 4 })
+            } else if (this.balanceFetchState === 'ok' && this.balanceAmount !== '') {
+              // 余额显示
+              Text('¥ ' + this.balanceAmount)
+                .fontSize(20)
+                .fontWeight(FontWeight.Bold)
+                .fontColor('#007DFF')
+                .margin({ top: 4 })
+              // 估算翻译字数：DeepSeek 价格约 ¥1/百万tokens，1token≈1.5汉字
+              // ¥0.001/千tokens = ¥1/百万tokens；1w汉字≈6667tokens≈¥0.0067
+              // 更保守估算：混合价格约 ¥0.002/千tokens（输入+输出）
+              // => 1元 ≈ 50万tokens ≈ 75万汉字 ≈ 75w字
+              // => balanceAmount 元 ≈ balanceAmount * 75 万字
+              Text('约可翻译 ' + (Math.floor(parseFloat(this.balanceAmount) * 75 * 10) / 10).toString() + ' 万字小说')
+                .fontSize(11)
+                .fontColor(this.getColors().hintText)
+                .margin({ top: 4 })
+            } else if (this.balanceFetchState === 'fail') {
+              Text('获取失败，请重试')
+                .fontSize(12)
+                .fontColor('#FF4D4F')
+                .margin({ top: 4 })
+            } else {
+              Text('点击刷新查询余额')
+                .fontSize(12)
+                .fontColor(this.getColors().tertiaryText)
+                .margin({ top: 4 })
+            }
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+
+          // 刷新按钮
+          Button(this.balanceFetchState === 'loading' ? '查询中' : '↻ 刷新')
+            .fontSize(13)
+            .height(34)
+            .padding({ left: 14, right: 14 })
+            .fontColor(this.getColors().accentText)
+            .backgroundColor(this.getColors().pageBg)
+            .borderRadius(8)
+            .border({ width: 1, color: this.getColors().accentText, radius: 8 })
+            .enabled(this.balanceFetchState !== 'loading')
+            .onClick((): void => { this.fetchBalance(); })
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
+
+        // 价格提示（移到余额栏下面）
+        Text('约 ¥0.002 / 1K tokens · 估算仅供参考，以官方为准')
+          .fontSize(10)
+          .fontColor(this.getColors().tertiaryText)
+          .margin({ top: 8 })
+      }
     }
     .width('100%')
     .padding(16)

@@ -56,6 +56,23 @@ interface DeepSeekResponse {
   usage: DeepSeekUsage;
 }
 
+interface DeepSeekBalanceInfo {
+  currency: string;
+  total_balance: string;
+  granted_balance: string;
+  topped_up_balance: string;
+}
+
+interface DeepSeekBalanceResp {
+  is_available: boolean;
+  balance_infos: DeepSeekBalanceInfo[];
+}
+
+interface BalanceFetchResult {
+  success: boolean;
+  data: string;
+  error: string;
+}
 // ========================================
 // 自适应并发控制器
 // ========================================
@@ -127,6 +144,67 @@ export class DeepSeekService {
 
   estimateCost(charCount: number): number {
     return (charCount / 1000) * 0.002;
+  }
+
+  /**
+   * 查询账户余额
+   * GET https://api.deepseek.com/user/balance
+   */
+  async fetchBalance(apiKey?: string): Promise<BalanceFetchResult> {
+    const key = apiKey ?? (AppStorage.get('deepseekApiKey') as string) ?? '';
+    if (!key.trim()) {
+      // ✅ 使用显式类型的对象字面量
+      const failResult: BalanceFetchResult = { success: false, data: '', error: '未配置 API 密钥' };
+      return failResult;
+    }
+    try {
+      const httpRequest = http.createHttp();
+      const response = await httpRequest.request(
+        'https://api.deepseek.com/user/balance',
+        {
+          method: http.RequestMethod.GET,
+          header: {
+            'Accept': 'application/json',
+            'Authorization': `Bearer ${key}`
+          },
+          connectTimeout: 10000,
+          readTimeout: 10000
+        }
+      );
+      httpRequest.destroy();
+
+      if (response.responseCode === 200) {
+        // ✅ 使用顶层声明的接口，不在函数体内声明 interface
+        const body = JSON.parse(response.result as string) as DeepSeekBalanceResp;
+        let total = '0';
+        // 优先取 CNY，没有则取第一条
+        for (let i = 0; i < body.balance_infos.length; i++) {
+          if (body.balance_infos[i].currency === 'CNY') {
+            total = body.balance_infos[i].total_balance;
+            break;
+          }
+        }
+        if (total === '0' && body.balance_infos.length > 0) {
+          total = body.balance_infos[0].total_balance;
+        }
+        const okResult: BalanceFetchResult = { success: true, data: total, error: '' };
+        return okResult;
+      } else {
+        const httpFailResult: BalanceFetchResult = {
+          success: false,
+          data: '',
+          error: `HTTP ${response.responseCode}`
+        };
+        return httpFailResult;
+      }
+    } catch (e) {
+      const catchResult: BalanceFetchResult = {
+        success: false,
+        data: '',
+        error: String(e)
+      };
+      return catchResult;
+    }
   }
 
   async translateText(text: string, isTitle: boolean = false): Promise<TranslationResult> {
