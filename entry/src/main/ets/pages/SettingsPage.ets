@@ -1,7 +1,5 @@
 // entry/src/main/ets/pages/SettingsPage.ets
 import { CrawlerSettings } from '../components/settings/CrawlerSettings';
-import { AuthorSettings } from '../components/settings/AuthorSettings';
-import { BookSettings } from '../components/settings/BookSettings';
 import { AboutSettings } from '../components/settings/AboutSettings';
 import router from '@ohos.router';
 
@@ -33,7 +31,8 @@ export struct SettingsPage {
   @StorageProp('currentColorMode') colorMode: number = 0;
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
-  private tabs: string[] = ['爬取设置', '关注作者', '关注书籍', '关于'];
+  // ✅ 修改：只保留爬取设置和关于
+  private tabs: string[] = ['爬取设置', '关于'];
 
   private getColors(): SettingsPageColors {
     return getSettingsPageColors(this.colorMode);
@@ -41,7 +40,7 @@ export struct SettingsPage {
 
   build() {
     Column() {
-      // ✅ 添加返回按钮和标题
+      // 顶部标题栏
       Row() {
         Button() {
           Text('〈 返回').fontSize(14).fontColor('#007DFF')
@@ -87,7 +86,6 @@ export struct SettingsPage {
           .height('100%')
           .justifyContent(FlexAlign.Center)
           .onClick(() => {
-            console.info('[SettingsPage] 点击 tab: ' + index);
             this.currentTab = index;
           })
         }, (tab: string) => tab)
@@ -102,14 +100,8 @@ export struct SettingsPage {
         CrawlerSettings()
           .visibility(this.currentTab === 0 ? Visibility.Visible : Visibility.None)
 
-        AuthorSettings()
-          .visibility(this.currentTab === 1 ? Visibility.Visible : Visibility.None)
-
-        BookSettings()
-          .visibility(this.currentTab === 2 ? Visibility.Visible : Visibility.None)
-
         AboutSettings()
-          .visibility(this.currentTab === 3 ? Visibility.Visible : Visibility.None)
+          .visibility(this.currentTab === 1 ? Visibility.Visible : Visibility.None)
       }
       .width('100%')
       .layoutWeight(1)

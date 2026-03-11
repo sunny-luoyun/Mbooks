@@ -75,13 +75,23 @@ function getSearchColors(mode: number): SearchColors {
 
 @Component
 export struct SearchPage {
-  @StorageLink('globalSearchKey') searchKey: string = ""
+  @StorageLink('globalSearchKey') @Watch('onGlobalSearchChange') searchKey: string = ""
   @State searchResults: ThreadItemWithMarks[] = []
   @State isSearching: boolean = false
   @State colorMode: number = 0;
   private crawler: CrawlerService | null = null
   private configChangeCallback: () => void = () => {};
   private configCallbackId: number = -1;
+
+  onGlobalSearchChange() {
+    if (this.searchKey && this.searchKey !== this.inputValue) {
+      this.inputValue = this.searchKey;
+      // 延迟执行确保 UI 已更新
+      setTimeout(() => {
+        this.doSearch(this.searchKey);
+      }, 0);
+    }
+  }
 
   @State private inputValue: string = ""
   @State private historyList: string[] = []
@@ -143,8 +153,8 @@ export struct SearchPage {
       SearchHistoryManager.addHistory(keyword.trim());
       this.refreshHistory();
     }
-    this.searchKey = keyword;
     this.isSearching = true;
+    this.searchResults = [];
     if (this.crawler) {
       this.searchResults = this.crawler.searchLocal(keyword)
     }
