@@ -20,7 +20,7 @@ export interface TranslationResult {
   success: boolean;
   translatedText?: string;
   error?: string;
-  usage?: TranslationUsage;  // ← 改用具名接口
+  usage?: TranslationUsage;
 }
 
 // ========================================
@@ -57,6 +57,44 @@ interface DeepSeekResponse {
 }
 
 // ========================================
+// 自适应并发控制器
+// ========================================
+class AdaptiveConcurrencyController {
+  private windowSize: number = 5;
+  private readonly minWindow: number = 1;
+  private readonly maxWindow: number = 50;
+  private readonly successIncrement: number = 1;
+  private readonly failureDecrementFactor: number = 2;
+  private consecutiveSuccess: number = 0;
+
+  getCurrentWindow(): number {
+    return this.windowSize;
+  }
+
+  onSuccess(): void {
+    this.consecutiveSuccess++;
+    if (this.consecutiveSuccess >= 3) {
+      this.windowSize = Math.min(this.windowSize + this.successIncrement, this.maxWindow);
+      this.consecutiveSuccess = 0;
+    }
+  }
+
+  onFailure(errorType: 'rate_limit' | 'timeout' | 'other'): void {
+    this.consecutiveSuccess = 0;
+    switch (errorType) {
+      case 'rate_limit':
+        this.windowSize = Math.max(this.minWindow, Math.floor(this.windowSize / this.failureDecrementFactor));
+        break;
+      case 'timeout':
+        this.windowSize = Math.max(this.minWindow, this.windowSize - 2);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+// ========================================
 // 主服务类
 // ========================================
 
@@ -65,7 +103,6 @@ export class DeepSeekService {
   private baseUrl: string = 'https://api.deepseek.com/v1/chat/completions';
   private model: string = 'deepseek-chat';
 
-  // 统计信息
   private totalTranslatedChars: number = 0;
   private totalRequests: number = 0;
 
@@ -73,23 +110,14 @@ export class DeepSeekService {
     this.apiKey = apiKey;
   }
 
-  /**
-   * 更新API密钥（用户在设置页修改后调用）
-   */
   updateApiKey(apiKey: string): void {
     this.apiKey = apiKey;
   }
 
-  /**
-   * 检查API密钥是否有效
-   */
   hasValidKey(): boolean {
     return this.apiKey.length > 0 && this.apiKey.trim().length > 0;
   }
 
-  /**
-   * 获取统计信息
-   */
   getStats(): StatsResult {
     return {
       totalChars: this.totalTranslatedChars,
@@ -97,19 +125,10 @@ export class DeepSeekService {
     };
   }
 
-  /**
-   * 估算费用（仅供参考）
-   * DeepSeek 价格：约 $0.002 / 1K 字符（请以官方最新价格为准）
-   */
   estimateCost(charCount: number): number {
     return (charCount / 1000) * 0.002;
   }
 
-  /**
-   * 翻译文本
-   * @param text 要翻译的日文文本
-   * @param isTitle 是否为标题（标题翻译用不同提示词）
-   */
   async translateText(text: string, isTitle: boolean = false): Promise<TranslationResult> {
     if (!this.hasValidKey()) {
       return {
@@ -125,7 +144,6 @@ export class DeepSeekService {
       };
     }
 
-    // 构建提示词
     const systemPrompt = isTitle
       ? `你是一个专业的日文翻译。请将以下日文标题翻译成中文。
 要求：
@@ -170,8 +188,8 @@ export class DeepSeekService {
           'Authorization': `Bearer ${this.apiKey}`
         },
         extraData: JSON.stringify(requestBody),
-        connectTimeout: 30000,  // 30秒超时
-        readTimeout: 60000       // 60秒读取超时
+        connectTimeout: 30000,
+        readTimeout: 60000
       });
 
       const code = response.responseCode;
@@ -203,7 +221,6 @@ export class DeepSeekService {
       if (data.choices && data.choices.length > 0) {
         const translated = data.choices[0].message.content;
 
-        // 更新统计
         this.totalRequests++;
         this.totalTranslatedChars += text.length;
 
@@ -228,7 +245,6 @@ export class DeepSeekService {
       const error = err as BusinessError;
       let errorMsg = '网络错误，请检查后重试';
 
-      // 根据错误码提供更具体的提示
       switch (error.code) {
         case 2300006:
           errorMsg = '无法连接网络，请检查网络设置';
@@ -250,44 +266,99 @@ export class DeepSeekService {
     }
   }
 
-  /**
-   * 批量翻译多个段落（用于整章翻译）
-   * @param paragraphs 段落数组
-   * @param onProgress 进度回调
-   */
+  // ========================================
+  // 翻译段落（并发版）
+  // ========================================
   async translateParagraphs(
     paragraphs: string[],
     onProgress?: (current: number, total: number, translated: string) => void
   ): Promise<TranslationResult[]> {
-    const results: TranslationResult[] = [];
+    const total = paragraphs.length;
+    if (total === 0) return [];
 
-    for (let i = 0; i < paragraphs.length; i++) {
-      const para = paragraphs[i];
-      if (!para.trim()) {
-        // 空行保留
-        results.push({ success: true, translatedText: '' });
-        continue;
+    const results: TranslationResult[] = new Array(total);
+    let completedCount = 0;
+    let nextIndex = 0;
+    const activePromises = new Set<Promise<void>>();
+    const controller = new AdaptiveConcurrencyController();
+
+    let finalResolve: (() => void) | null = null;
+    const finalPromise = new Promise<void>((resolve) => {
+      finalResolve = resolve;
+    });
+
+    // ✅ 修复1：明确返回类型 Promise<void>，移除内部对 activePromise 的引用
+    const processParagraph = async (index: number): Promise<void> => {
+      const text = paragraphs[index];
+      let result: TranslationResult;
+
+      if (!text.trim()) {
+        result = { success: true, translatedText: '' };
+      } else {
+        try {
+          result = await this.translateText(text, false);
+          if (result.success) {
+            controller.onSuccess();
+          } else {
+            if (result.error?.includes('请求过于频繁')) {
+              controller.onFailure('rate_limit');
+            } else if (result.error?.includes('超时') || result.error?.includes('timeout')) {
+              controller.onFailure('timeout');
+            } else {
+              controller.onFailure('other');
+            }
+          }
+        } catch (e) {
+          result = { success: false, error: '未知异常' };
+          controller.onFailure('other');
+        }
       }
 
-      const result = await this.translateText(para, false);
-      results.push(result);
+      results[index] = result;
+      completedCount++;
+      onProgress?.(completedCount, total, result.translatedText || '');
+      // 注意：不在这里 delete，交给 dispatchNext 里的 finally 处理
+    };
 
-      if (onProgress) {
-        onProgress(i + 1, paragraphs.length, result.translatedText || '');
+    // ✅ 修复2：在 dispatchNext 里用局部变量 p 持有 Promise 引用，
+    //          通过 .finally() 删除，彻底消除 activePromise 作用域问题；
+    //          .catch 回调参数显式标注 Error 类型，消除 any/unknown 报错
+    const dispatchNext = (): void => {
+      while (activePromises.size < controller.getCurrentWindow() && nextIndex < total) {
+        const index = nextIndex++;
+
+        // 先声明变量，再赋值，让 finally 闭包可以正确捕获
+        let p: Promise<void>;
+        p = processParagraph(index)
+          .catch((err: Error): void => {
+            // ✅ err 显式声明为 Error，解决 arkts-no-any-unknown 报错
+            console.error(`段落 ${index} 处理异常: ${err.message}`);
+          })
+          .finally((): void => {
+            // ✅ 在这里删除自身引用，完全不依赖外部 activePromise 变量
+            activePromises.delete(p);
+            // 每次有任务完成，都尝试继续派发或判断是否全部完成
+            dispatchNext();
+          });
+
+        activePromises.add(p);
       }
 
-      // API调用延迟，避免频率限制
-      if (i < paragraphs.length - 1) {
-        await new Promise<void>(resolve => setTimeout(resolve, 800));
+      // 所有段落已派发且无活跃请求 → 全部完成
+      if (nextIndex >= total && activePromises.size === 0) {
+        finalResolve?.();
       }
-    }
+    };
 
+    dispatchNext();
+
+    await finalPromise;
     return results;
   }
 }
 
 // ========================================
-// 单例工厂（配合AppStorage中的API Key）
+// 单例工厂（配合 AppStorage 中的 API Key）
 // ========================================
 
 let _deepSeekInstance: DeepSeekService | null = null;
