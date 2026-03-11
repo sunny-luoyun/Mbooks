@@ -38,6 +38,12 @@ interface PixivAjaxResponse<T> {
   body:    T;
 }
 
+interface FollowingAuthorsResponseBody {
+  users: Array<RawPixivUserItem>;
+  total: number;
+  hasNext: boolean;
+}
+
 interface NovelSearchData {
   data:  RawPixivNovelItem[];
   total: number;
@@ -152,12 +158,17 @@ interface NovelDetailBody {
 // ========================================
 // 请求结果包装
 // ========================================
-
 export interface ServiceResult<T> {
   success: boolean;
   data?:   T;
   error?:  string;
   code?:   number;
+}
+
+interface FollowingAuthorsResult {
+  authors: PixivAuthor[];
+  total: number;
+  hasMore: boolean;
 }
 
 // ========================================
@@ -290,6 +301,49 @@ export class PixivService {
         hasMore: authors.length >= 20,
         keyword
       }
+    };
+  }
+
+  //获取关注列表
+  // 在 PixivService 类中添加
+  async fetchFollowingAuthors(page: number = 1): Promise<ServiceResult<FollowingAuthorsResult>> {
+    const userId = this.getUserIdFromCookie();
+    if (!userId) {
+      return { success: false, error: '无法获取用户ID，请检查 Cookie 是否有效' };
+    }
+
+    const limit = 48;
+    const offset = (page - 1) * limit;
+    const url = `${AJAX_BASE}/user/${userId}/following?offset=${offset}&limit=${limit}&rest=show&lang=zh`;
+
+    const resp = await this.get<PixivAjaxResponse<FollowingAuthorsResponseBody>>(url, TIMEOUT_SEARCH);
+    if (!resp.success || !resp.data) {
+      return { success: false, error: resp.error, code: resp.code };
+    }
+    if (resp.data.error) {
+      return { success: false, error: this.translatePixivError(resp.data.message) };
+    }
+
+    const body = resp.data.body;
+    const rawUsers = body.users || [];
+    const authors: PixivAuthor[] = rawUsers.map((raw: RawPixivUserItem): PixivAuthor => ({
+      id: raw.userId,
+      name: raw.name || raw.userName || '',
+      account: raw.account || raw.userAccount || '',
+      avatarUrl: raw.image || raw.profileImageUrl || '',
+      isFollowed: true,
+      novelCount: raw.novelCount,
+      illustCount: raw.illustCount,
+    }));
+    const result: FollowingAuthorsResult = {
+      authors,
+      total: body.total || authors.length,
+      hasMore: body.hasNext || (authors.length >= limit)
+    };
+    
+    return {
+      success: true,
+      data: result
     };
   }
 

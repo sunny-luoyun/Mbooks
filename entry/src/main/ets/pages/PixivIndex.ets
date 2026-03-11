@@ -3,6 +3,7 @@ import { PixivSearchPage } from '../components/Pixiv/PixivSearchPage';
 import { PixivFollowingPage } from '../components/Pixiv/PixivFollowingPage';
 import { PixivShelfPage } from '../components/Pixiv/PixivShelfPage';
 import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
+import { PixivFollowingAuthorsPage } from '../components/Pixiv/PixivFollowingAuthorsPage';
 import router from '@ohos.router';
 
 interface ColorConfig {
@@ -76,8 +77,9 @@ struct PixivIndex {
       // Pixiv的3个Tab：搜索、关注、书架（缓存）
       Tabs({ barPosition: BarPosition.End, controller: this.controller, index: this.currentIndex }) {
         TabContent() { PixivSearchPage() }.tabBar(this.TabBuilder('搜索', 0))
-        TabContent() { PixivFollowingPage() }.tabBar(this.TabBuilder('关注', 1))
-        TabContent() { PixivShelfPage() }.tabBar(this.TabBuilder('缓存', 2))
+        TabContent() { PixivFollowingPage() }.tabBar(this.TabBuilder('动态', 1))
+        TabContent() { PixivFollowingAuthorsPage() }.tabBar(this.TabBuilder('关注作者', 2))
+        TabContent() { PixivShelfPage() }.tabBar(this.TabBuilder('缓存', 3))
       }
       .onChange((index: number): void => { this.currentIndex = index })
       .barHeight(60)
