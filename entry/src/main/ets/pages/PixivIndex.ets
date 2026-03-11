@@ -57,7 +57,7 @@ struct PixivIndex {
         }
         .backgroundColor(Color.Transparent)
         .onClick(() => {
-          router.replaceUrl({ url: 'pages/LauncherPage' });
+          router.back();
         })
 
         Text('Pixiv 小说')

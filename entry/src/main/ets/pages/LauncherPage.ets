@@ -72,7 +72,7 @@ struct LauncherPage {
         .borderRadius(22)
         .margin({ top: 20 })
         .onClick(() => {
-          router.replaceUrl({ url: targetUrl });
+          router.pushUrl({ url: targetUrl });
         })
     }
     .width('90%')

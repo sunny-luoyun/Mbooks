@@ -47,7 +47,7 @@ export struct SettingsPage {
         }
         .backgroundColor(Color.Transparent)
         .onClick(() => {
-          router.replaceUrl({ url: 'pages/LauncherPage' });
+          router.back();
         })
 
         Text('设置')
