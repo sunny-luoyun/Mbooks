@@ -3,8 +3,8 @@
 import router from '@ohos.router';
 import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
-import { CrawlerService } from '../services/CrawlerService';
-import { ThreadItem, ThreadItemWithMarks } from '../models/SettingsModels';
+import { CrawlerService } from '../../services/CrawlerService';
+import { ThreadItem, ThreadItemWithMarks } from '../../models/SettingsModels';
 // import { Configuration } from '@ohos.arkui'; // 模块不存在，删除导入
 interface ResumeInfo {
   hasBreakpoint: boolean;
@@ -36,14 +36,6 @@ interface ColorConfig {
   sectionHeaderBg: string;
   emptyText: string;
   emptySubText: string;
-}
-interface Configuration {
-  colorMode: number;
-}
-interface ContextWithConfig {
-  config: Configuration;
-  on?: (event: string, callback: (config: Configuration) => void) => void;
-  off?: (event: string, callback: (config: Configuration) => void) => void;
 }
 
 interface ConfigUpdateEvent {

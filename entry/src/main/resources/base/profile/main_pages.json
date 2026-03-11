@@ -1,6 +1,9 @@
 {
   "src": [
-    "pages/Index",
+    "pages/LauncherPage",
+    "pages/MirrorIndex",
+    "pages/PixivIndex",
+    "pages/SettingsPage",
     "pages/DetailPage",
     "pages/ReaderPage",
     "pages/PixivNovelReaderPage"

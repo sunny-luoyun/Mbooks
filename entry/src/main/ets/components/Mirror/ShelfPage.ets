@@ -3,11 +3,11 @@ import router from '@ohos.router';
 import fs from '@ohos.file.fs';
 import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
-import { ConfigurationConstant } from '@kit.AbilityKit';
-import { CrawlerService } from '../services/CrawlerService';
-import { DownloadResult } from '../models/SettingsModels';
-import { ThreadMeta } from '../services/DownloadService';
-import { DownloadService } from '../services/DownloadService';
+import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
+import { CrawlerService } from '../../services/CrawlerService';
+import { DownloadResult } from '../../models/SettingsModels';
+import { ThreadMeta } from '../../services/DownloadService';
+import { DownloadService } from '../../services/DownloadService';
 
 interface PostTimeInfo {
   time: string;
@@ -259,7 +259,7 @@ export struct ShelfPage {
     try {
       const ctx = getContext(this) as common.UIAbilityContext;
       const ds = DownloadService.getInstance(ctx);
-      const success = await ds.downloadThread(book.threadId, book.title, book.author, (progress) => {});
+      const success = await ds.downloadThread(book.threadId, book.title, book.author, (progress: number) => {});
       if (success) { promptAction.showToast({ message: '更新成功' }); this.scanLocalFiles(); }
       else promptAction.showToast({ message: '更新失败' });
     } catch (e) {
@@ -281,13 +281,19 @@ export struct ShelfPage {
       promptAction.showToast({ message: '删除失败' });
     }
   }
-
   private showDeleteConfirm(book: LocalBook): void {
     AlertDialog.show({
       title: '确认删除',
       message: `确定要删除《${book.title}》吗？\n此操作不可恢复。`,
-      primaryButton: { value: '取消', action: () => {} },
-      secondaryButton: { value: '删除', action: () => this.deleteBook(book), fontColor: '#FF4D4F' }
+      primaryButton: {
+        value: '取消',
+        action: () => {}
+      },
+      secondaryButton: {
+        value: '删除', 
+        action: () => this.deleteBook(book),
+        fontColor: '#FF4D4F'
+      }
     });
   }
 
@@ -307,7 +313,6 @@ export struct ShelfPage {
     else this.localBooks.forEach(book => this.selectedBooks.add(book.threadId));
     this.selectedBooks = new Set(this.selectedBooks);
   }
-
   private async batchDelete(): Promise<void> {
     if (this.selectedBooks.size === 0) {
       promptAction.showToast({ message: '请先选择要删除的书籍' }); return;
@@ -315,8 +320,15 @@ export struct ShelfPage {
     AlertDialog.show({
       title: '批量删除',
       message: `确定要删除选中的 ${this.selectedBooks.size} 本书吗？`,
-      primaryButton: { value: '取消', action: () => {} },
-      secondaryButton: { value: '删除', action: () => this.executeBatchDelete(), fontColor: '#FF4D4F' }
+      primaryButton: {
+        value: '取消',
+        action: () => {}
+      },
+      secondaryButton: {
+        value: '删除',
+        action: () => this.executeBatchDelete(),
+        fontColor: '#FF4D4F'
+      }
     });
   }
 

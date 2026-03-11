@@ -3,8 +3,8 @@ import { CrawlerSettings } from '../components/settings/CrawlerSettings';
 import { AuthorSettings } from '../components/settings/AuthorSettings';
 import { BookSettings } from '../components/settings/BookSettings';
 import { AboutSettings } from '../components/settings/AboutSettings';
+import router from '@ohos.router';
 
-// 定义颜色配置接口
 interface SettingsPageColors {
   pageBg: string;
   headerBg: string;
@@ -14,9 +14,7 @@ interface SettingsPageColors {
   shadowColor: string;
 }
 
-// 颜色配置函数
 function getSettingsPageColors(mode: number): SettingsPageColors {
-  // 注意：在 HarmonyOS 中，ColorMode.DARK 通常对应 1，LIGHT 对应 0
   const isDark = (mode === 0);
   return {
     pageBg: isDark ? '#0D0D0D' : '#F5F5F5',
@@ -32,18 +30,41 @@ function getSettingsPageColors(mode: number): SettingsPageColors {
 @Component
 export struct SettingsPage {
   @State currentTab: number = 0;
-
-  // ✅ 修复点：变量名必须与 EntryAbility 中的 'currentColorMode' 保持一致
   @StorageProp('currentColorMode') colorMode: number = 0;
+  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
   private tabs: string[] = ['爬取设置', '关注作者', '关注书籍', '关于'];
 
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
+  private getColors(): SettingsPageColors {
+    return getSettingsPageColors(this.colorMode);
+  }
 
   build() {
-    // 在 build 内部实时获取当前颜色配置，确保 UI 响应
     Column() {
-      // 顶部导航
+      // ✅ 添加返回按钮和标题
+      Row() {
+        Button() {
+          Text('〈 返回').fontSize(14).fontColor('#007DFF')
+        }
+        .backgroundColor(Color.Transparent)
+        .onClick(() => {
+          router.replaceUrl({ url: 'pages/LauncherPage' });
+        })
+
+        Text('设置')
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.getColors().tabTextActive)
+          .layoutWeight(1)
+          .textAlign(TextAlign.Center)
+
+        Blank().width(60)
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 12 + px2vp(this.statusBarHeight), bottom: 12 })
+      .backgroundColor(this.getColors().headerBg)
+
+      // Tab导航
       Row() {
         ForEach(this.tabs, (tab: string, index: number) => {
           Column() {
@@ -51,13 +72,13 @@ export struct SettingsPage {
               .fontSize(14)
               .fontWeight(this.currentTab === index ? FontWeight.Bold : FontWeight.Normal)
               .fontColor(this.currentTab === index ?
-                getSettingsPageColors(this.colorMode).tabTextActive :
-                getSettingsPageColors(this.colorMode).tabTextInactive)
+                this.getColors().tabTextActive :
+                this.getColors().tabTextInactive)
 
             if (this.currentTab === index) {
               Divider()
                 .strokeWidth(2)
-                .color(getSettingsPageColors(this.colorMode).dividerColor)
+                .color(this.getColors().dividerColor)
                 .width(20)
                 .margin({ top: 4 })
             }
@@ -72,10 +93,9 @@ export struct SettingsPage {
         }, (tab: string) => tab)
       }
       .width('100%')
-      .height(50 + px2vp(this.statusBarHeight))  // ✅ 高度撑开
-      //.paddingTop(px2vp(this.statusBarHeight))   // ✅ 内容下移，避免被遮
-      .backgroundColor(getSettingsPageColors(this.colorMode).headerBg)
-      .shadow({ radius: 2, color: getSettingsPageColors(this.colorMode).shadowColor })
+      .height(50)
+      .backgroundColor(this.getColors().headerBg)
+      .shadow({ radius: 2, color: this.getColors().shadowColor })
 
       // 内容区
       Stack() {
@@ -96,8 +116,7 @@ export struct SettingsPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(getSettingsPageColors(this.colorMode).pageBg)
-    // 强制动画过渡，让颜色切换更平滑
+    .backgroundColor(this.getColors().pageBg)
     .animation({ duration: 200 })
   }
 }

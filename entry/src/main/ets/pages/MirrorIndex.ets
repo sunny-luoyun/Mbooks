@@ -1,9 +1,10 @@
-// entry/src/main/ets/pages/Index.ets
+// entry/src/main/ets/pages/MirrorIndex.ets
 import { SettingsPage } from './SettingsPage';
-import { ShelfPage } from '../components/ShelfPage';
-import { UpdateFeedPage } from '../components/UpdateFeedPage';
-import { SearchPage } from '../components/SearchPage';
+import { ShelfPage } from '../components/Mirror/ShelfPage';
+import { UpdateFeedPage } from '../components/Mirror/UpdateFeedPage';
+import { SearchPage } from '../components/Mirror/SearchPage';
 import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
+import router from '@ohos.router';
 
 interface ColorConfig {
   pageBg: string;
@@ -26,8 +27,8 @@ function getIndexColors(mode: number): ColorConfig {
 
 @Entry
 @Component
-struct Index {
-  @StorageLink('mainTabIndex') currentIndex: number = 0;
+struct MirrorIndex {
+  @State currentIndex: number = 0;
   @StorageProp('currentColorMode') colorMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
 
   private controller: TabsController = new TabsController();
@@ -52,23 +53,43 @@ struct Index {
 
   build() {
     Column() {
+      // ✅ 顶部添加返回按钮，方便回到Launcher
+      Row() {
+        Button() {
+          Text('〈 返回').fontSize(14).fontColor('#007DFF')
+        }
+        .backgroundColor(Color.Transparent)
+        .onClick(() => {
+          router.replaceUrl({ url: 'pages/LauncherPage' });
+        })
+
+        Text('Mirror 书库')
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.getColors().tabTextActive)
+          .layoutWeight(1)
+          .textAlign(TextAlign.Center)
+
+        Blank().width(60) // 平衡布局
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 12 + px2vp(AppStorage.get<number>('statusBarHeight') || 0), bottom: 8 })
+      .backgroundColor(this.getColors().tabBarBg)
+
       Tabs({ barPosition: BarPosition.End, controller: this.controller, index: this.currentIndex }) {
         TabContent() { ShelfPage() }.tabBar(this.TabBuilder('书架', 0))
         TabContent() { UpdateFeedPage() }.tabBar(this.TabBuilder('最新', 1))
         TabContent() { SearchPage() }.tabBar(this.TabBuilder('搜索', 2))
-        TabContent() { SettingsPage() }.tabBar(this.TabBuilder('设置', 3))
       }
       .onChange((index: number): void => { this.currentIndex = index })
       .barHeight(60)
       .backgroundColor(this.getColors().tabBarBg)
       .layoutWeight(1)
-      // ✅ 关键：让整个 Tabs 组件（含 TabBar）扩展到系统安全区外（底部导航栏区域）
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
     }
     .width('100%')
     .height('100%')
     .backgroundColor(this.getColors().pageBg)
-    // ✅ 顶部也扩展，让内容能延伸到状态栏后面
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

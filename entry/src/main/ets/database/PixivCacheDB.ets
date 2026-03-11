@@ -296,30 +296,6 @@ export class PixivCacheDB {
     });
   }
 
-  // 临时调试：在 PixivCacheDB 里加一个方法
-  async debugGetNovelRaw(novelId: string): Promise<void> {
-    if (!this.checkReady()) return;
-    const predicates = new relationalStore.RdbPredicates(TABLE_NOVELS);
-    predicates.equalTo(COL.ID, novelId);
-    try {
-      const result = await this.rdbStore!.query(predicates,
-        [COL.ID, COL.TITLE, COL.CACHE_STATUS, COL.FULL_TEXT]);
-      if (result.rowCount > 0) {
-        result.goToFirstRow();
-        const id = result.getString(result.getColumnIndex(COL.ID));
-        const title = result.getString(result.getColumnIndex(COL.TITLE));
-        const status = result.getString(result.getColumnIndex(COL.CACHE_STATUS));
-        const textLen = result.getString(result.getColumnIndex(COL.FULL_TEXT))?.length ?? 0;
-        console.info(`[PixivCacheDB][debug] id=${id}, title=${title}, cache_status="${status}", fullText长度=${textLen}`);
-        result.close();
-      } else {
-        console.warn(`[PixivCacheDB][debug] novelId=${novelId} 在数据库中不存在！`);
-        result.close();
-      }
-    } catch (err) {
-      console.error(`[PixivCacheDB][debug] 查询失败: ${JSON.stringify(err)}`);
-    }
-  }
 
   /**
    * 标记缓存开始（防止重复点击缓存按钮）

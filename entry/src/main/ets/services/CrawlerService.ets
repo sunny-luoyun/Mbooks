@@ -355,9 +355,6 @@ export class CrawlerService {
     });
   }
 
-  private stateToArray(state: Record<string, ThreadItem>): ThreadItem[] {
-    return Object.values(state).sort((a, b) => Number(b.lastPid) - Number(a.lastPid));
-  }
 
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));

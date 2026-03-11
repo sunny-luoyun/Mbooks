@@ -1,9 +1,6 @@
 // entry/src/main/ets/components/settings/AboutSettings.ets
 import { SettingsService } from '../../services/SettingsService';
 import promptAction from '@ohos.promptAction';
-import { Configuration } from '@ohos.app.ability.Configuration';
-import { Context } from '@ohos.abilityAccessCtrl';
-import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
 import common from '@ohos.app.ability.common';
 
 interface AboutSettingsColors {
@@ -105,7 +102,7 @@ export struct AboutSettings {
         .fontColor(this.getColors().primaryText)
         .margin({ bottom: 8 })
 
-      Text('v1.0.0')
+      Text('v2.0.0')
         .fontSize(16)
         .fontColor(this.getColors().versionText)
         .margin({ bottom: 8 })
