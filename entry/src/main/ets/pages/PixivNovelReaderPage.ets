@@ -167,6 +167,12 @@ struct PixivNovelReaderPage {
   @State private novelAuthor:  string  = '';
   @State private colorMode:    number  = 0;
 
+  // ── 阅读进度保存 ──
+  private scroller: Scroller = new Scroller();          // Scroll 组件控制器
+  private saveProgressTimer: number = -1;               // 防抖定时器
+  private readonly PROGRESS_SAVE_DELAY = 2000;          // 2秒防抖
+  @State private hasRestoredPosition: boolean = false; // 防止重复恢复
+
   // ── ★ 离线模式：解析后的段落块列表（替代 cachedText + WebView）──
   @State private contentBlocks: ContentBlock[] = [];
   @State private isLoading:     boolean = true;   // 离线：读 DB 中 / 在线：WebView 加载中
@@ -239,6 +245,19 @@ struct PixivNovelReaderPage {
     if (this.configCallbackId !== -1) {
       ctx.getApplicationContext().off('environment', this.configCallbackId);
     }
+
+    // 离线模式退出时立即保存一次进度（不防抖）
+    if (this.offlineMode && this.params?.novelId) {
+      if (this.saveProgressTimer !== -1) {
+        clearTimeout(this.saveProgressTimer);
+      }
+      const currentY = this.scroller.currentOffset().yOffset;
+      pixivCacheDB.saveReadingProgress(
+        this.params.novelId,
+        currentY,
+        !this.showOriginal
+      );
+    }
   }
 
   // ========================================
@@ -261,6 +280,18 @@ struct PixivNovelReaderPage {
       this.contentBlocks = parsePixivBlocks(text);
       this.renderBlocks = this.contentBlocks;  // ← 同步给渲染用
       console.info(`${TAG} 解析完成，共 ${this.contentBlocks.length} 个块`);
+
+      if (this.contentBlocks.length > 0) {
+        const savedY = await pixivCacheDB.getReadingProgress(novelId, !this.showOriginal);
+        if (savedY > 0) {
+          console.info(`${TAG} 恢复阅读位置: ${savedY}px`);
+          // 延迟一点确保渲染完成
+          setTimeout(() => {
+            this.scroller.scrollTo({ xOffset: 0, yOffset: savedY });
+            this.hasRestoredPosition = true;
+          }, 100);
+        }
+      }
 
       const novel = await pixivCacheDB.getNovelById(novelId);
       if (novel?.hasTitleTranslation && novel.titleTranslated) {
@@ -344,6 +375,28 @@ struct PixivNovelReaderPage {
         this.performFullTranslation(novelId, originalText);
       }
     });
+  }
+
+  /**
+   * 防抖保存阅读进度（停止滚动2秒后保存）
+   */
+  private debouncedSaveProgress(yOffset: number): void {
+    // 清除之前的定时器
+    if (this.saveProgressTimer !== -1) {
+      clearTimeout(this.saveProgressTimer);
+    }
+
+    // 设置新定时器
+    this.saveProgressTimer = setTimeout(() => {
+      if (this.params?.novelId) {
+        // 根据当前显示的是原文还是译文，分别保存
+        pixivCacheDB.saveReadingProgress(
+          this.params.novelId,
+          Math.floor(yOffset),
+          !this.showOriginal  // showOriginal=false 表示显示译文
+        );
+      }
+    }, this.PROGRESS_SAVE_DELAY);
   }
 
   // ✅ 新增：执行全文翻译
@@ -502,11 +555,36 @@ struct PixivNovelReaderPage {
         .margin({ right: 8 })
         .enabled(this.translatedBlocks.length > 0)
         .onClick(() => {
+          if (!this.params?.novelId) return;
+
+          // 1. 先保存当前视图的进度
+          const currentY = this.scroller.currentOffset().yOffset;
+          pixivCacheDB.saveReadingProgress(
+            this.params.novelId,
+            currentY,
+            !this.showOriginal  // 当前是原文就保存原文进度
+          );
+
+          // 2. 切换状态
           this.showOriginal = !this.showOriginal;
           this.showTranslation = !this.showOriginal;
           this.renderBlocks = this.showOriginal
             ? this.contentBlocks
             : this.translatedBlocks;
+
+          // 3. 异步加载新视图的进度
+          setTimeout(async () => {
+            const targetY = await pixivCacheDB.getReadingProgress(
+              this.params!.novelId,
+              !this.showOriginal  // 新视图的类型
+            );
+
+            // 滚动到新位置（如果无记录则回顶部）
+            this.scroller.scrollTo({
+              xOffset: 0,
+              yOffset: targetY > 0 ? targetY : 0
+            });
+          }, 50);
         })
 
         // 翻译按钮
@@ -597,7 +675,7 @@ struct PixivNovelReaderPage {
     } else {
 
       // ★ 正文渲染：Scroll + List，流畅可滚动
-      Scroll() {
+      Scroll(this.scroller) {
         Column() {
           ForEach(
             this.renderBlocks,
@@ -663,6 +741,12 @@ struct PixivNovelReaderPage {
       .height('100%')
       .scrollable(ScrollDirection.Vertical)
       .edgeEffect(EdgeEffect.Spring)
+      .onScroll((xOffset: number, yOffset: number) => {
+        // 仅离线模式且非加载状态时保存进度
+        if (this.offlineMode && !this.isLoading && this.params?.novelId) {
+          this.debouncedSaveProgress(yOffset);
+        }
+      })
 
       // 翻译进度条
       if (this.isTranslating) {

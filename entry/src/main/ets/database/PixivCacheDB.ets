@@ -149,6 +149,8 @@ export class PixivCacheDB {
       }
       // version === DB_VERSION：无需任何操作
 
+      await this.initProgressTable();
+
       this.initialized = true;
       console.info(`[PixivCacheDB] 初始化成功，数据库版本: v${DB_VERSION}`);
     } catch (err) {
@@ -572,6 +574,91 @@ export class PixivCacheDB {
   }
 
   /**
+   * 初始化时安全创建进度表（幂等操作，失败不影响主业务）
+   * 在 init() 方法末尾调用
+   */
+  private async initProgressTable(): Promise<void> {
+    if (!this.rdbStore) return;
+    try {
+      await this.rdbStore.executeSql(SQL_CREATE_PROGRESS_TABLE);
+      console.info('[PixivCacheDB] 阅读进度表初始化成功');
+    } catch (err) {
+      // 只打日志，不阻断流程
+      console.error('[PixivCacheDB] 进度表初始化失败（非致命）:', JSON.stringify(err));
+    }
+  }
+
+  /**
+   * 保存阅读进度
+   * @param novelId 小说ID
+   * @param scrollY 滚动位置（像素）
+   * @param isTranslated 是否译文视图（原文和译文分别存不同进度）
+   */
+  async saveReadingProgress(novelId: string, scrollY: number, isTranslated: boolean): Promise<void> {
+    if (!this.checkReady() || !novelId) return;
+
+    const values: relationalStore.ValuesBucket = {
+      'novel_id': novelId,
+      'is_translated': isTranslated ? 1 : 0,
+      'scroll_y': Math.max(0, Math.floor(scrollY)),
+      'last_read_at': new Date().toISOString()
+    };
+
+    try {
+      await this.rdbStore!.insert(
+        TABLE_READING_PROGRESS,
+        values,
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE
+      );
+      console.info(`[PixivCacheDB] 进度已保存: ${novelId}, y=${scrollY}, trans=${isTranslated}`);
+    } catch (err) {
+      console.error(`[PixivCacheDB] 保存进度失败: ${JSON.stringify(err)}`);
+    }
+  }
+
+  /**
+   * 获取阅读进度
+   * @returns 上次保存的滚动位置（0表示无记录或从头开始）
+   */
+  async getReadingProgress(novelId: string, isTranslated: boolean): Promise<number> {
+    if (!this.checkReady() || !novelId) return 0;
+
+    try {
+      const predicates = new relationalStore.RdbPredicates(TABLE_READING_PROGRESS);
+      predicates.equalTo('novel_id', novelId)
+        .and()
+        .equalTo('is_translated', isTranslated ? 1 : 0);
+
+      const result = await this.rdbStore!.query(predicates, ['scroll_y']);
+      if (result.rowCount > 0) {
+        result.goToFirstRow();
+        const y = result.getLong(result.getColumnIndex('scroll_y'));
+        result.close();
+        return y;
+      }
+      result.close();
+      return 0;
+    } catch (err) {
+      console.error(`[PixivCacheDB] 获取进度失败: ${JSON.stringify(err)}`);
+      return 0;
+    }
+  }
+
+  /**
+   * 删除阅读进度（清理数据时用）
+   */
+  async deleteReadingProgress(novelId: string): Promise<void> {
+    if (!this.checkReady()) return;
+    try {
+      const predicates = new relationalStore.RdbPredicates(TABLE_READING_PROGRESS);
+      predicates.equalTo('novel_id', novelId);
+      await this.rdbStore!.delete(predicates);
+    } catch (err) {
+      console.error(`[PixivCacheDB] 删除进度失败: ${JSON.stringify(err)}`);
+    }
+  }
+
+  /**
    * ResultSet → PixivNovel[]
    * 统一出口，避免每个查询方法都写一遍解析逻辑
    */
@@ -653,6 +740,22 @@ export interface CacheStats {
   cachedNovels: number; // 已完整缓存正文的条数
   totalChars: number;   // 缓存正文总字数（估算占用空间用）
 }
+
+// ========================================
+// 阅读进度管理（独立表，不影响原有数据）
+// ========================================
+
+const TABLE_READING_PROGRESS = 'reading_progress';
+
+const SQL_CREATE_PROGRESS_TABLE = `
+  CREATE TABLE IF NOT EXISTS ${TABLE_READING_PROGRESS} (
+    novel_id      TEXT    NOT NULL,
+    is_translated INTEGER DEFAULT 0,
+    scroll_y      INTEGER DEFAULT 0,
+    last_read_at  TEXT    DEFAULT '',
+    PRIMARY KEY (novel_id, is_translated)
+  )
+`;
 
 // ========================================
 // 单例导出（全局共享同一个 DB 实例）
