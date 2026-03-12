@@ -141,6 +141,7 @@ struct PixivAuthorPage {
       }
       this.hasMore = result.data.hasMore;
       this.currentPage = page;
+      pixivCacheDB.saveNovelMetaBatch(result.data.novels);
     } else {
       this.loadError = result.error || '加载失败';  // 记录错误
       promptAction.showToast({ message: this.loadError });

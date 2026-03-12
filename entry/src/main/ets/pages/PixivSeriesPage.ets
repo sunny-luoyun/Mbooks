@@ -146,37 +146,54 @@ struct PixivSeriesPage {
     const result = await this.pixivService.fetchSeriesNovels(this.seriesId, page);
 
     if (result.success && result.data) {
-      // ✅ 联网成功，清除离线模式标志
       this.isOfflineMode = false;
 
-      const merged = await this.mergeCacheStatus(result.data.novels);
+      // ✅ 【修改点】先提取顶层信息
+      const apiSeriesTitle = result.data?.seriesTitle || '';
+      const apiAuthorName  = result.data?.authorName  || '';
+
+      // ✅ 【修改点】在 mergeCacheStatus / saveNovelMetaBatch 之前，
+      //    先把 author 和 series.title 补全到每个 novel 上
+      //    这样存入数据库的数据就是完整的，书架展示时不会有空白
+      result.data.novels.forEach((novel: PixivNovel) => {
+        if (!novel.author && apiAuthorName) {
+          novel.author = apiAuthorName;
+        }
+        if (!novel.series) {
+          novel.series = { id: this.seriesId, title: apiSeriesTitle || this.seriesTitle, order: 0 };
+        } else {
+          if (!novel.series.id) novel.series.id = this.seriesId;
+          if (!novel.series.title && (apiSeriesTitle || this.seriesTitle)) {
+            novel.series.title = apiSeriesTitle || this.seriesTitle;
+          }
+        }
+      });
+
+      const merged = await this.mergeCacheStatus(result.data?.novels || []);
 
       if (page === 1) {
         this.novels = merged;
-        if (result.data.seriesTitle && this.seriesTitle === '系列详情') {
-          this.seriesTitle = result.data.seriesTitle;
+        if (apiSeriesTitle && this.seriesTitle === '系列详情') {
+          this.seriesTitle = apiSeriesTitle;
         }
-        this.seriesCaption = result.data.seriesCaption || '';
-        this.authorName = result.data.authorName || '';
+        this.seriesCaption = result.data?.seriesCaption || '';
+        this.authorName = apiAuthorName;
       } else {
         this.novels = this.novels.concat(merged);
       }
-
-      this.hasMore = result.data.hasMore;
+      this.hasMore = result.data?.hasMore;
       this.currentPage = page;
 
-      // 缓存元数据到本地数据库
+      // ✅ 此时 novels 里每个对象的 author 和 series.title 都已补全，存库数据完整
       pixivCacheDB.saveNovelMetaBatch(result.data.novels);
+
     } else {
-      // ✅ 网络失败（超时/无网/梯子关闭）—— 降级到本地缓存
       console.warn(`[SeriesPage] 网络请求失败: ${result.error}，尝试加载本地缓存`);
       await this.loadCachedSeriesNovels();
 
       if (this.novels.length === 0) {
-        // 既没网络，本地也没缓存过该系列的小说
         promptAction.showToast({ message: '无网络且暂无缓存，请联网后重试' });
       }
-      // 有本地缓存则静默展示，不弹错误 toast
     }
 
     this.isLoading = false;
@@ -208,6 +225,19 @@ struct PixivSeriesPage {
 
   private async cacheNovel(novel: PixivNovel): Promise<void> {
     if (this.cachingIds.has(novel.id)) return;
+
+    // 缓存前再次确保 series / author 信息完整，避免 shelf 按单篇分组
+    if (!novel.author && this.authorName) {
+      novel.author = this.authorName;
+    }
+    if (!novel.series) {
+      novel.series = { id: this.seriesId, title: this.seriesTitle, order: 0 };
+    } else {
+      if (!novel.series.id) novel.series.id = this.seriesId;
+      if (!novel.series.title && this.seriesTitle) {
+        novel.series.title = this.seriesTitle;
+      }
+    }
     await pixivCacheDB.saveNovelMeta(novel);
 
     const newSet = new Set<string>(this.cachingIds);
@@ -448,12 +478,19 @@ struct PixivSeriesPage {
         // 系列序号标记
         if (novel.series?.order) {
           Text(`#${novel.series.order}`)
-            .fontSize(11)
-            .fontColor(this.getColors().accentText)
+            .fontSize(11).fontColor(this.getColors().accentText)
             .margin({ right: 6 })
             .padding({ left: 4, right: 4, top: 1, bottom: 1 })
             .backgroundColor(this.getColors().tagBg)
             .borderRadius(4)
+        }
+
+        // ✅ 新增：系列标题标签（当序号无法代表系列名时补充显示）
+        if (novel.series?.title) {
+          Text(`[${novel.series.title}]`)
+            .fontSize(11).fontColor(this.getColors().accentText)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .constraintSize({ maxWidth: '40%' }).margin({ right: 6 })
         }
 
         Text(
@@ -483,7 +520,13 @@ struct PixivSeriesPage {
       .width('100%').alignItems(VerticalAlign.Top)
 
       Row() {
-        Text(formatTextLength(novel.textLength))
+        if (novel.author) {
+          Text(novel.author)
+            .fontSize(12).fontColor(this.getColors().secondaryText)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .constraintSize({ maxWidth: '40%' })
+        }
+        Text(' · ' + formatTextLength(novel.textLength))
           .fontSize(12).fontColor(this.getColors().tertiaryText)
         Text(' · ' + formatPixivDate(novel.createDate))
           .fontSize(12).fontColor(this.getColors().tertiaryText)
