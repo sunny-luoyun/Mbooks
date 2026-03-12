@@ -72,6 +72,11 @@ struct PixivSeriesPage {
   @State colorMode: number = 0;
   @State cachingIds: Set<string> = new Set();
 
+  // ✅ 新增：离线模式标志
+  @State isOfflineMode: boolean = false;
+  // ✅ 新增：离线模式下缓存的小说总数（用于显示）
+  @State offlineCachedCount: number = 0;
+
   private pixivService = getPixivService();
   private configChangeCallback: () => void = () => {};
   private configCallbackId: number = -1;
@@ -112,6 +117,28 @@ struct PixivSeriesPage {
     return getSeriesPageColors(this.colorMode);
   }
 
+  // ✅ 新增：从本地缓存数据库中查找属于本系列的所有已缓存小说
+  private async loadCachedSeriesNovels(): Promise<void> {
+    this.isOfflineMode = true;
+
+    // 从 DB 取出所有缓存的小说，再按 series.id 过滤
+    const allCached = await pixivCacheDB.getAllCachedNovels();
+    const seriesNovels = allCached.filter((novel: PixivNovel): boolean => {
+      return novel.series?.id === this.seriesId;
+    });
+
+    // 按系列序号升序排列（如果没有序号，按 id 升序兜底）
+    seriesNovels.sort((a: PixivNovel, b: PixivNovel): number => {
+      const orderA = a.series?.order ?? parseInt(a.id, 10);
+      const orderB = b.series?.order ?? parseInt(b.id, 10);
+      return orderA - orderB;
+    });
+
+    this.novels = seriesNovels;
+    this.offlineCachedCount = seriesNovels.length;
+    this.hasMore = false; // 离线模式下不支持加载更多
+  }
+
   private async loadSeriesNovels(page: number): Promise<void> {
     if (!this.seriesId) return;
 
@@ -119,11 +146,13 @@ struct PixivSeriesPage {
     const result = await this.pixivService.fetchSeriesNovels(this.seriesId, page);
 
     if (result.success && result.data) {
+      // ✅ 联网成功，清除离线模式标志
+      this.isOfflineMode = false;
+
       const merged = await this.mergeCacheStatus(result.data.novels);
 
       if (page === 1) {
         this.novels = merged;
-        // 更新系列信息（如果从列表页只传了ID，这里可以获取完整标题）
         if (result.data.seriesTitle && this.seriesTitle === '系列详情') {
           this.seriesTitle = result.data.seriesTitle;
         }
@@ -139,7 +168,15 @@ struct PixivSeriesPage {
       // 缓存元数据到本地数据库
       pixivCacheDB.saveNovelMetaBatch(result.data.novels);
     } else {
-      promptAction.showToast({ message: result.error || '加载失败' });
+      // ✅ 网络失败（超时/无网/梯子关闭）—— 降级到本地缓存
+      console.warn(`[SeriesPage] 网络请求失败: ${result.error}，尝试加载本地缓存`);
+      await this.loadCachedSeriesNovels();
+
+      if (this.novels.length === 0) {
+        // 既没网络，本地也没缓存过该系列的小说
+        promptAction.showToast({ message: '无网络且暂无缓存，请联网后重试' });
+      }
+      // 有本地缓存则静默展示，不弹错误 toast
     }
 
     this.isLoading = false;
@@ -290,6 +327,31 @@ struct PixivSeriesPage {
       })
       .backgroundColor(this.getColors().headerBg)
 
+      // ✅ 新增：离线模式提示横幅
+      if (this.isOfflineMode) {
+        Row() {
+          Text('📴').fontSize(14)
+          Text(this.offlineCachedCount > 0
+            ? `  离线模式 · 显示本系列 ${this.offlineCachedCount} 部已缓存作品`
+            : '  离线模式 · 本系列暂无缓存作品')
+            .fontSize(13)
+            .fontColor('#D48806')
+            .layoutWeight(1)
+          // 重试按钮：点击后重新尝试联网加载
+          Text('重试')
+            .fontSize(13)
+            .fontColor('#FA8C16')
+            .padding({ left: 12, top: 4, bottom: 4 })
+            .onClick((): void => {
+              this.isOfflineMode = false;
+              this.loadSeriesNovels(1);
+            })
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+        .backgroundColor(this.colorMode === 0 ? '#2D2200' : '#FFFBE6')
+      }
+
       // 系列信息卡片
       Column() {
         Text(this.seriesTitle)
@@ -316,7 +378,7 @@ struct PixivSeriesPage {
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
 
-        Text(`共 ${this.novels.length} 部作品`)
+        Text(`共 ${this.novels.length} 部作品${this.isOfflineMode ? '（已缓存）' : ''}`)
           .fontSize(12)
           .fontColor(this.getColors().tertiaryText)
           .margin({ top: 8 })
@@ -353,7 +415,7 @@ struct PixivSeriesPage {
                 .enabled(!this.isLoading)
                 .onClick((): void => { this.loadMore() })
             } else {
-              Text('— 已加载全部作品 —')
+              Text(this.isOfflineMode ? '— 以上为本系列所有缓存作品 —' : '— 已加载全部作品 —')
                 .fontSize(12).fontColor(this.getColors().tertiaryText)
                 .width('100%').textAlign(TextAlign.Center)
                 .padding({ top: 8, bottom: 8 })
@@ -367,7 +429,10 @@ struct PixivSeriesPage {
       } else {
         Column() {
           Text('📚').fontSize(60).margin({ bottom: 16 })
-          Text('暂无作品').fontSize(16).fontColor(this.getColors().emptyText)
+          Text(this.isOfflineMode ? '本系列暂无缓存作品' : '暂无作品')
+            .fontSize(16).fontColor(this.getColors().emptyText)
+          Text(this.isOfflineMode ? '请联网后访问以加载完整列表' : '')
+            .fontSize(12).fontColor(this.getColors().emptySubText).margin({ top: 8 })
         }
         .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
       }
@@ -380,7 +445,7 @@ struct PixivSeriesPage {
   @Builder NovelCard(novel: PixivNovel) {
     Column() {
       Row() {
-        // 系列序号标记（如果是系列中的小说）
+        // 系列序号标记
         if (novel.series?.order) {
           Text(`#${novel.series.order}`)
             .fontSize(11)
@@ -458,7 +523,15 @@ struct PixivSeriesPage {
               ? '#FF4D4F' : this.getColors().accentText)
             .backgroundColor(this.getColors().tagBg)
             .borderRadius(8).height(32).padding({ left: 12, right: 12 })
-            .onClick((): void => { this.cacheNovel(novel) })
+          // ✅ 离线模式下缓存按钮置灰（无法联网）
+            .enabled(!this.isOfflineMode)
+            .onClick((): void => {
+              if (this.isOfflineMode) {
+                promptAction.showToast({ message: '离线状态下无法缓存，请开启代理后重试' });
+                return;
+              }
+              this.cacheNovel(novel);
+            })
         }
         if (novel.cacheStatus === CacheStatus.CACHING) {
           Row() {
@@ -481,7 +554,15 @@ struct PixivSeriesPage {
           .backgroundColor(this.getColors().tagBg)
           .borderRadius(8).height(32).padding({ left: 12, right: 12 })
           .margin({ left: 8 })
-          .onClick((): void => { this.openOnlineReader(novel) })
+          // ✅ 离线模式下在线阅读按钮置灰
+          .enabled(!this.isOfflineMode)
+          .onClick((): void => {
+            if (this.isOfflineMode) {
+              promptAction.showToast({ message: '离线状态下请使用离线阅读' });
+              return;
+            }
+            this.openOnlineReader(novel);
+          })
       }
       .width('100%').margin({ top: 10 })
     }

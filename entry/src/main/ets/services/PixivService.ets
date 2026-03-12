@@ -531,8 +531,10 @@ export class PixivService {
     const lastOrder = (page - 1) * limit;
 
     // ✅ 第一步：获取系列基本信息（不带 ?p= 参数）
+    // 使用短超时（2000ms），关闭梯子时快速失败，让调用方降级到本地缓存
+    const SERIES_TIMEOUT = 2000;
     const infoUrl = `${AJAX_BASE}/novel/series/${seriesId}`;
-    const infoResp = await this.get<PixivAjaxResponse<SeriesInfoBody>>(infoUrl, TIMEOUT_SEARCH);
+    const infoResp = await this.get<PixivAjaxResponse<SeriesInfoBody>>(infoUrl, SERIES_TIMEOUT);
 
     if (!infoResp.success || !infoResp.data || infoResp.data.error) {
       return { success: false, error: infoResp.data?.message || infoResp.error, code: infoResp.code };
@@ -540,7 +542,7 @@ export class PixivService {
 
     // ✅ 第二步：获取系列内小说列表
     const contentUrl = `${AJAX_BASE}/novel/series_content/${seriesId}?limit=${limit}&last_order=${lastOrder}&order_by=asc`;
-    const contentResp = await this.get<PixivAjaxResponse<SeriesContentBody>>(contentUrl, TIMEOUT_SEARCH);
+    const contentResp = await this.get<PixivAjaxResponse<SeriesContentBody>>(contentUrl, SERIES_TIMEOUT);
 
     if (!contentResp.success || !contentResp.data || contentResp.data.error) {
       return { success: false, error: contentResp.data?.message || contentResp.error, code: contentResp.code };
