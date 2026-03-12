@@ -8,11 +8,12 @@ import {
   PixivTag,
   formatTextLength,
   formatPixivDate,
-  getCacheStatusDisplay,
-  isReadableOffline
+  isReadableOffline,
+  getCacheStatusDisplay
 } from '../../models/PixivModels';
 import { getPixivService } from '../../services/PixivService';
 import { pixivCacheDB } from '../../database/PixivCacheDB';
+import { getDeepSeekService, DeepSeekService } from '../../services/DeepSeekService';
 
 interface FollowingColors {
   pageBg: string;
@@ -63,6 +64,8 @@ export struct PixivFollowingPage {
   @State total: number = 0
   @State colorMode: number = 0;
   @State cachingIds: Set<string> = new Set()
+  @State translatingIds: Set<string> = new Set()
+  @State showingOriginalIds: Set<string> = new Set()
 
   private pixivService = getPixivService()
   private configChangeCallback: () => void = () => {};
@@ -125,14 +128,76 @@ export struct PixivFollowingPage {
     this.isLoading = false;
   }
 
+  private async handleTitleClick(novel: PixivNovel): Promise<void> {
+    if (this.translatingIds.has(novel.id)) {
+      return;
+    }
+
+    if (novel.hasTitleTranslation && novel.titleTranslated) {
+      const newSet = new Set(this.showingOriginalIds);
+      if (newSet.has(novel.id)) {
+        newSet.delete(novel.id);
+        promptAction.showToast({ message: '已切换为译文' });
+      } else {
+        newSet.add(novel.id);
+        promptAction.showToast({ message: '已切换为原文' });
+      }
+      this.showingOriginalIds = newSet;
+      return;
+    }
+
+    // ✅ 修复1：加明确类型声明
+    const service: DeepSeekService = getDeepSeekService();
+    if (!service.hasValidKey()) {
+      promptAction.showToast({ message: '请先在设置中填入 DeepSeek API 密钥' });
+      return;
+    }
+
+    this.translatingIds.add(novel.id);
+    this.translatingIds = new Set(this.translatingIds);
+
+    const result = await service.translateText(novel.title, true);
+
+    if (result.success && result.translatedText) {
+      await pixivCacheDB.saveTitleTranslation(novel.id, result.translatedText);
+
+      novel.titleTranslated = result.translatedText;
+      novel.hasTitleTranslation = true;
+
+      // ✅ 修复2：变量名改为 followingResults，展开改为逐字段赋值
+      this.followingResults = this.followingResults.map((n: PixivNovel): PixivNovel => {
+        if (n.id === novel.id) {
+          n.titleTranslated = novel.titleTranslated;
+          n.hasTitleTranslation = novel.hasTitleTranslation;
+        }
+        return n;
+      });
+
+      promptAction.showToast({ message: '标题翻译完成' });
+    } else {
+      promptAction.showToast({ message: result.error || '翻译失败' });
+    }
+
+    this.translatingIds.delete(novel.id);
+    this.translatingIds = new Set(this.translatingIds);
+  }
+
   private async mergeCacheStatus(novels: PixivNovel[]): Promise<PixivNovel[]> {
     return Promise.all(
       novels.map(async (novel) => {
         const local = await pixivCacheDB.getNovelById(novel.id);
-        if (local && local.cacheStatus === CacheStatus.CACHED) {
-          novel.cacheStatus = CacheStatus.CACHED;
-          novel.cachedAt = local.cachedAt;
-          novel.fullText = local.fullText;
+        if (local) {
+          // 原有缓存状态合并
+          if (local.cacheStatus === CacheStatus.CACHED) {
+            novel.cacheStatus = CacheStatus.CACHED;
+            novel.cachedAt = local.cachedAt;
+            novel.fullText = local.fullText;
+          }
+          // ✅ 新增：合并标题翻译状态
+          if (local.hasTitleTranslation && local.titleTranslated) {
+            novel.titleTranslated = local.titleTranslated;
+            novel.hasTitleTranslation = true;
+          }
         }
         return novel;
       })
@@ -333,6 +398,7 @@ export struct PixivFollowingPage {
 
   @Builder NovelCard(novel: PixivNovel) {
     Column() {
+      // ✅ 修改后
       Row() {
         if (novel.series) {
           Text(`[${novel.series.title}]`)
@@ -340,15 +406,47 @@ export struct PixivFollowingPage {
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             .constraintSize({ maxWidth: '40%' }).margin({ right: 6 })
         }
-        Text(novel.title)
-          .fontSize(15).fontWeight(FontWeight.Medium)
-          .fontColor(this.getColors().primaryText)
-          .layoutWeight(1).maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        // ✅ 改动①：原来的 Text(novel.title) 换成这个可点击的内嵌 Row
+        Row() {
+          // 翻译进行中时显示 Loading 转圈
+          if (this.translatingIds.has(novel.id)) {
+            LoadingProgress()
+              .width(14).height(14)
+              .color(this.getColors().accentText)
+              .margin({ right: 4 })
+          }
+
+          // 标题：根据 showingOriginalIds 决定显示原文还是译文
+          Text(
+            this.showingOriginalIds.has(novel.id) || !novel.titleTranslated
+              ? novel.title
+              : novel.titleTranslated
+          )
+            .fontSize(15).fontWeight(FontWeight.Medium)
+            .fontColor(novel.hasTitleTranslation
+              ? this.getColors().accentText    // 有翻译 → 主题色（提示可点击）
+              : this.getColors().primaryText)  // 无翻译 → 默认色
+            .layoutWeight(1).maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .layoutWeight(1)  // ⬅️ 把原来 Text 上的 layoutWeight 移到这个 Row 上
+        .onClick(() => this.handleTitleClick(novel))
+
+        // ✅ 改动②：补充"译"徽章（有翻译时才显示）
+        if (novel.hasTitleTranslation) {
+          Text('译')
+            .fontSize(9)
+            .fontColor('#52C41A')
+            .backgroundColor('#F6FFED')
+            .borderRadius(2)
+            .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+            .margin({ left: 4 })
+        }
 
         this.CacheStatusBadge(novel.cacheStatus)
       }
-      .width('100%').alignItems(VerticalAlign.Top)
+      .width('100%').alignItems(VerticalAlign.Top)  // 这行保持不变
 
       Row() {
         Text(novel.author)
