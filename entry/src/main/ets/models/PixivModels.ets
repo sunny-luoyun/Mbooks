@@ -128,6 +128,18 @@ export interface PixivSearchResult {
   keyword: string;        // 本次搜索的关键词（方便结果回显）
 }
 
+export interface PixivSeriesResult {
+  seriesId: string;
+  seriesTitle: string;
+  seriesCaption?: string;
+  authorId: string;
+  authorName: string;
+  novels: PixivNovel[];
+  total: number;
+  currentPage: number;
+  hasMore: boolean;
+}
+
 // ========================================
 // 新增：Pixiv 作者信息接口
 // ========================================
@@ -188,6 +200,7 @@ export interface RawPixivNovelItem {
   url: string;              // 封面图
   tags: string[];           // 纯字符串标签
   textCount: number;
+  wordCount?: number;
   pageCount: number;
   createDate: string;
   updateDate: string;
@@ -208,7 +221,7 @@ export function parsePixivNovelFromRaw(raw: RawPixivNovelItem): PixivNovel {
     authorId:     raw.userId,
     coverUrl:     raw.url,
     tags:         (raw.tags ?? []).map((t: string): PixivTag => ({ name: t })),
-    textLength:   raw.textCount ?? 0,
+    textLength: raw.textCount ?? raw.wordCount ?? 0,
     pageCount:    raw.pageCount ?? 1,
     createDate:   raw.createDate,
     updateDate:   raw.updateDate,

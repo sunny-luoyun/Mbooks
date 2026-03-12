@@ -1,4 +1,4 @@
-// entry/src/main/ets/pages/PixivAuthorPage.ets
+// entry/src/main/ets/pages/PixivSeriesPage.ets
 import router from '@ohos.router';
 import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
@@ -8,17 +8,13 @@ import {
   PixivTag,
   formatTextLength,
   formatPixivDate,
-  getCacheStatusDisplay,
   isReadableOffline,
-  PixivSearchResult
+  getCacheStatusDisplay
 } from '../models/PixivModels';
-import { getPixivService, PixivService, ServiceResult } from '../services/PixivService';
+import { getPixivService } from '../services/PixivService';
 import { pixivCacheDB } from '../database/PixivCacheDB';
-import { getDeepSeekService, DeepSeekService } from '../services/DeepSeekService';
 
-
-
-interface AuthorPageColors {
+interface SeriesPageColors {
   pageBg: string;
   cardBg: string;
   headerBg: string;
@@ -33,10 +29,10 @@ interface AuthorPageColors {
   failBadgeBg: string;
   emptyText: string;
   emptySubText: string;
-  avatarBg: string;
+  seriesInfoBg: string;
 }
 
-function getAuthorPageColors(mode: number): AuthorPageColors {
+function getSeriesPageColors(mode: number): SeriesPageColors {
   const isDark = mode === 0;
   return {
     pageBg: isDark ? '#0D0D0D' : '#F1F3F5',
@@ -53,34 +49,30 @@ function getAuthorPageColors(mode: number): AuthorPageColors {
     failBadgeBg: isDark ? '#3A1A1A' : '#FFF2F0',
     emptyText: isDark ? '#666666' : '#999999',
     emptySubText: isDark ? '#444444' : '#BBBBBB',
-    avatarBg: isDark ? '#2A2A2A' : '#F0F0F0',
+    seriesInfoBg: isDark ? '#1A1A2E' : '#E8F0FE'
   };
 }
 
 interface RouterParams {
-  authorId: string;
-  authorName: string;
-  authorAvatar?: string;
+  seriesId: string;
+  seriesTitle?: string;
 }
 
 @Entry
 @Component
-struct PixivAuthorPage {
-  @State authorId: string = '';
-  @State authorName: string = '作者详情';
-  @State authorAvatar: string = '';
+struct PixivSeriesPage {
+  @State seriesId: string = '';
+  @State seriesTitle: string = '系列详情';
+  @State seriesCaption: string = '';
+  @State authorName: string = '';
   @State novels: PixivNovel[] = [];
   @State isLoading: boolean = false;
   @State currentPage: number = 1;
   @State hasMore: boolean = false;
   @State colorMode: number = 0;
   @State cachingIds: Set<string> = new Set();
-  @State isFollowed: boolean = false;
-  @State loadError: string = '';  // 新增：错误信息
-  @State translatingIds: Set<string> = new Set()
-  @State showingOriginalIds: Set<string> = new Set()
 
-  private pixivService: PixivService | null = null;
+  private pixivService = getPixivService();
   private configChangeCallback: () => void = () => {};
   private configCallbackId: number = -1;
 
@@ -96,21 +88,17 @@ struct PixivAuthorPage {
       onMemoryLevel: (_level: number) => {}
     });
 
-    // ✅ 修复1：先初始化数据库（与 PixivSearchPage 保持一致）
-    await pixivCacheDB.init(ctx);
-
-    // ✅ 修复2：在 aboutToAppear 里再获取 service，确保此时 AppStorage
-    //          中的 pixivSessionId 已经就绪，Cookie 不会为空
-    this.pixivService = getPixivService();
-
     // 获取路由参数
     const params = router.getParams() as RouterParams;
-    if (params?.authorId) {
-      this.authorId = params.authorId;
-      this.authorName = params.authorName || '作者详情';
-      this.authorAvatar = params.authorAvatar || '';
-      await this.loadAuthorNovels(1);
+    if (params?.seriesId) {
+      this.seriesId = params.seriesId;
+      if (params.seriesTitle) {
+        this.seriesTitle = params.seriesTitle;
+      }
+      await pixivCacheDB.init(ctx);
     }
+
+    await this.loadSeriesNovels(1);
   }
 
   aboutToDisappear(): void {
@@ -120,86 +108,41 @@ struct PixivAuthorPage {
     }
   }
 
-  private getColors(): AuthorPageColors {
-    return getAuthorPageColors(this.colorMode);
+  private getColors(): SeriesPageColors {
+    return getSeriesPageColors(this.colorMode);
   }
 
-  private async loadAuthorNovels(page: number): Promise<void> {
-    if (!this.authorId) return;
-    // ✅ 修复3：加 null 守卫防止 service 未初始化时调用
-    if (!this.pixivService) return;
+  private async loadSeriesNovels(page: number): Promise<void> {
+    if (!this.seriesId) return;
+
     this.isLoading = true;
-    this.loadError = '';
-    const result: ServiceResult<PixivSearchResult> = await this.pixivService.fetchAuthorNovels(this.authorId, page);
+    const result = await this.pixivService.fetchSeriesNovels(this.seriesId, page);
 
     if (result.success && result.data) {
       const merged = await this.mergeCacheStatus(result.data.novels);
+
       if (page === 1) {
         this.novels = merged;
+        // 更新系列信息（如果从列表页只传了ID，这里可以获取完整标题）
+        if (result.data.seriesTitle && this.seriesTitle === '系列详情') {
+          this.seriesTitle = result.data.seriesTitle;
+        }
+        this.seriesCaption = result.data.seriesCaption || '';
+        this.authorName = result.data.authorName || '';
       } else {
         this.novels = this.novels.concat(merged);
       }
+
       this.hasMore = result.data.hasMore;
       this.currentPage = page;
+
+      // 缓存元数据到本地数据库
+      pixivCacheDB.saveNovelMetaBatch(result.data.novels);
     } else {
-      this.loadError = result.error || '加载失败';  // 记录错误
-      promptAction.showToast({ message: this.loadError });
+      promptAction.showToast({ message: result.error || '加载失败' });
     }
+
     this.isLoading = false;
-  }
-
-  private async handleTitleClick(novel: PixivNovel): Promise<void> {
-    if (this.translatingIds.has(novel.id)) {
-      return;
-    }
-
-    if (novel.hasTitleTranslation && novel.titleTranslated) {
-      const newSet = new Set(this.showingOriginalIds);
-      if (newSet.has(novel.id)) {
-        newSet.delete(novel.id);
-        promptAction.showToast({ message: '已切换为译文' });
-      } else {
-        newSet.add(novel.id);
-        promptAction.showToast({ message: '已切换为原文' });
-      }
-      this.showingOriginalIds = newSet;
-      return;
-    }
-
-    // ✅ 修复1：加明确类型声明
-    const service: DeepSeekService = getDeepSeekService();
-    if (!service.hasValidKey()) {
-      promptAction.showToast({ message: '请先在设置中填入 DeepSeek API 密钥' });
-      return;
-    }
-
-    this.translatingIds.add(novel.id);
-    this.translatingIds = new Set(this.translatingIds);
-
-    const result = await service.translateText(novel.title, true);
-
-    if (result.success && result.translatedText) {
-      await pixivCacheDB.saveTitleTranslation(novel.id, result.translatedText);
-
-      novel.titleTranslated = result.translatedText;
-      novel.hasTitleTranslation = true;
-
-      // ✅ 修复2：变量名改为 novels，展开改为逐字段赋值
-      this.novels = this.novels.map((n: PixivNovel): PixivNovel => {
-        if (n.id === novel.id) {
-          n.titleTranslated = novel.titleTranslated;
-          n.hasTitleTranslation = novel.hasTitleTranslation;
-        }
-        return n;
-      });
-
-      promptAction.showToast({ message: '标题翻译完成' });
-    } else {
-      promptAction.showToast({ message: result.error || '翻译失败' });
-    }
-
-    this.translatingIds.delete(novel.id);
-    this.translatingIds = new Set(this.translatingIds);
   }
 
   private async mergeCacheStatus(novels: PixivNovel[]): Promise<PixivNovel[]> {
@@ -211,7 +154,7 @@ struct PixivAuthorPage {
           novel.cachedAt = local.cachedAt;
           novel.fullText = local.fullText;
         }
-        // ✅ 新增：合并标题翻译
+        // 合并标题翻译
         if (local && local.hasTitleTranslation && local.titleTranslated) {
           novel.titleTranslated = local.titleTranslated;
           novel.hasTitleTranslation = true;
@@ -223,12 +166,11 @@ struct PixivAuthorPage {
 
   private loadMore(): void {
     if (!this.hasMore || this.isLoading) return;
-    this.loadAuthorNovels(this.currentPage + 1);
+    this.loadSeriesNovels(this.currentPage + 1);
   }
+
   private async cacheNovel(novel: PixivNovel): Promise<void> {
     if (this.cachingIds.has(novel.id)) return;
-    // ✅ 修复：加 null 守卫防止 service 未初始化时调用
-    if (!this.pixivService) return;
     await pixivCacheDB.saveNovelMeta(novel);
 
     const newSet = new Set<string>(this.cachingIds);
@@ -237,7 +179,8 @@ struct PixivAuthorPage {
 
     this.updateNovelStatus(novel.id, CacheStatus.CACHING);
     await pixivCacheDB.markCaching(novel.id);
-    const result: ServiceResult<string> = await this.pixivService.fetchNovelText(novel.id);
+
+    const result = await this.pixivService.fetchNovelText(novel.id);
     if (result.success && result.data) {
       await pixivCacheDB.saveFullText(novel.id, result.data);
       this.updateNovelStatusWithText(novel.id, CacheStatus.CACHED, result.data);
@@ -283,8 +226,6 @@ struct PixivAuthorPage {
   }
 
   private async openOfflineReader(novel: PixivNovel): Promise<void> {
-    const ctx = getContext(this) as common.UIAbilityContext;
-    await pixivCacheDB.init(ctx);
     const text = await pixivCacheDB.getFullText(novel.id);
     if (!text) {
       promptAction.showToast({ message: '缓存内容丢失，请重新缓存' });
@@ -303,6 +244,20 @@ struct PixivAuthorPage {
     });
   }
 
+  private openAuthorPage(): void {
+    if (!this.novels.length) return;
+    const authorId = this.novels[0]?.authorId;
+    if (authorId) {
+      router.pushUrl({
+        url: 'pages/PixivAuthorPage',
+        params: {
+          authorId: authorId,
+          authorName: this.authorName || this.novels[0].author
+        }
+      });
+    }
+  }
+
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
   build() {
@@ -315,7 +270,7 @@ struct PixivAuthorPage {
         .backgroundColor(Color.Transparent)
         .onClick(() => router.back())
 
-        Text(this.authorName)
+        Text(this.seriesTitle)
           .fontSize(18)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.getColors().primaryText)
@@ -335,47 +290,40 @@ struct PixivAuthorPage {
       })
       .backgroundColor(this.getColors().headerBg)
 
-      // 作者信息卡片
-      Row() {
-        // 头像
-        if (this.authorAvatar) {
-          Image(this.authorAvatar)
-            .width(60)
-            .height(60)
-            .borderRadius(30)
-            .objectFit(ImageFit.Cover)
-            .margin({ right: 16 })
-        } else {
-          Column() {
-            Text('👤').fontSize(30)
-          }
-          .width(60)
-          .height(60)
-          .borderRadius(30)
-          .backgroundColor(this.getColors().avatarBg)
-          .justifyContent(FlexAlign.Center)
-          .margin({ right: 16 })
+      // 系列信息卡片
+      Column() {
+        Text(this.seriesTitle)
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.getColors().accentText)
+          .width('100%')
+          .textAlign(TextAlign.Center)
+
+        if (this.authorName) {
+          Text(`作者: ${this.authorName}`)
+            .fontSize(14)
+            .fontColor(this.getColors().secondaryText)
+            .margin({ top: 8 })
+            .onClick(() => this.openAuthorPage())
         }
 
-        Column() {
-          Text(this.authorName)
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.getColors().primaryText)
-            .width('100%')
-
-          Text(`ID: ${this.authorId}`)
+        if (this.seriesCaption) {
+          Text(this.seriesCaption)
             .fontSize(12)
             .fontColor(this.getColors().tertiaryText)
-            .margin({ top: 4 })
-            .width('100%')
+            .margin({ top: 8 })
+            .maxLines(3)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
+
+        Text(`共 ${this.novels.length} 部作品`)
+          .fontSize(12)
+          .fontColor(this.getColors().tertiaryText)
+          .margin({ top: 8 })
       }
       .width('92%')
       .padding(16)
-      .backgroundColor(this.getColors().cardBg)
+      .backgroundColor(this.getColors().seriesInfoBg)
       .borderRadius(12)
       .margin({ top: 12, bottom: 12 })
       .alignSelf(ItemAlign.Center)
@@ -384,7 +332,7 @@ struct PixivAuthorPage {
       if (this.isLoading && this.novels.length === 0) {
         Column() {
           LoadingProgress().width(48).height(48).color(this.getColors().accentText)
-          Text('正在加载作品...')
+          Text('正在加载系列作品...')
             .fontSize(14).fontColor(this.getColors().secondaryText).margin({ top: 12 })
         }
         .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
@@ -404,7 +352,7 @@ struct PixivAuthorPage {
                 .borderRadius(12)
                 .enabled(!this.isLoading)
                 .onClick((): void => { this.loadMore() })
-            } else if (this.novels.length > 0) {
+            } else {
               Text('— 已加载全部作品 —')
                 .fontSize(12).fontColor(this.getColors().tertiaryText)
                 .width('100%').textAlign(TextAlign.Center)
@@ -419,7 +367,7 @@ struct PixivAuthorPage {
       } else {
         Column() {
           Text('📚').fontSize(60).margin({ bottom: 16 })
-          Text('暂无公开作品').fontSize(16).fontColor(this.getColors().emptyText)
+          Text('暂无作品').fontSize(16).fontColor(this.getColors().emptyText)
         }
         .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
       }
@@ -432,59 +380,29 @@ struct PixivAuthorPage {
   @Builder NovelCard(novel: PixivNovel) {
     Column() {
       Row() {
-        if (novel.series) {
-          Text(`[${novel.series.title}]`)
-            .fontSize(11).fontColor(this.getColors().accentText)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            .constraintSize({ maxWidth: '40%' }).margin({ right: 6 })
-            .onClick(() => {
-              // 阻止事件冒泡，避免触发卡片的其他点击
-              if (novel.series) {
-                router.pushUrl({
-                  url: 'pages/PixivSeriesPage',
-                  params: {
-                    seriesId: novel.series.id,
-                    seriesTitle: novel.series.title
-                  }
-                });
-              }
-            })
-            // 添加手势反馈
-            .gesture(
-              TapGesture({ count: 1 })
-                .onAction(() => {
-                  // 点击效果已在 onClick 中处理
-                })
-            )
+        // 系列序号标记（如果是系列中的小说）
+        if (novel.series?.order) {
+          Text(`#${novel.series.order}`)
+            .fontSize(11)
+            .fontColor(this.getColors().accentText)
+            .margin({ right: 6 })
+            .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+            .backgroundColor(this.getColors().tagBg)
+            .borderRadius(4)
         }
 
-        // ✅ 改动①：原来的 Text(novel.title) 换成这个可点击的内嵌 Row
-        Row() {
-          // 翻译进行中时显示 Loading 转圈
-          if (this.translatingIds.has(novel.id)) {
-            LoadingProgress()
-              .width(14).height(14)
-              .color(this.getColors().accentText)
-              .margin({ right: 4 })
-          }
+        Text(
+          novel.hasTitleTranslation && novel.titleTranslated
+            ? novel.titleTranslated
+            : novel.title
+        )
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.getColors().primaryText)
+          .layoutWeight(1)
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-          // 标题：根据 showingOriginalIds 决定显示原文还是译文
-          Text(
-            this.showingOriginalIds.has(novel.id) || !novel.titleTranslated
-              ? novel.title
-              : novel.titleTranslated
-          )
-            .fontSize(15).fontWeight(FontWeight.Medium)
-            .fontColor(novel.hasTitleTranslation
-              ? this.getColors().accentText    // 有翻译 → 主题色（提示可点击）
-              : this.getColors().primaryText)  // 无翻译 → 默认色
-            .layoutWeight(1).maxLines(2)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .layoutWeight(1)  // ⬅️ 把原来 Text 上的 layoutWeight 移到这个 Row 上
-        .onClick(() => this.handleTitleClick(novel))
-
-        // ✅ 改动②：补充"译"徽章（有翻译时才显示）
         if (novel.hasTitleTranslation) {
           Text('译')
             .fontSize(9)
@@ -497,7 +415,7 @@ struct PixivAuthorPage {
 
         this.CacheStatusBadge(novel.cacheStatus)
       }
-      .width('100%').alignItems(VerticalAlign.Top)  // 这行保持不变
+      .width('100%').alignItems(VerticalAlign.Top)
 
       Row() {
         Text(formatTextLength(novel.textLength))

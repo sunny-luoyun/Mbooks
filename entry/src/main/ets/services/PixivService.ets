@@ -91,6 +91,31 @@ interface SearchUsersResponse {
   thumbnails?:  SearchUsersThumbnails;
 }
 
+// ✅ 新增：fetchSeriesNovels 返回类型
+export interface PixivSeriesResult {
+  seriesId:      string;
+  seriesTitle:   string;
+  seriesCaption?: string;
+  authorId:      string;
+  authorName:    string;
+  novels:        PixivNovel[];
+  total:         number;
+  currentPage:   number;
+  hasMore:       boolean;
+}
+
+// ✅ 新增：fetchSeriesNovels 内部 API body 类型（替换内联对象字面量）
+interface SeriesResponseBody {
+  seriesId:       string;
+  seriesTitle:    string;
+  seriesCaption?: string;
+  authorId:       string;
+  authorName:     string;
+  novels:         RawPixivNovelItem[];
+  total:          number;
+  hasMore:        boolean;
+}
+
 interface FollowingNovelPage {
   ids:   number[];
   total: number;
@@ -153,6 +178,30 @@ interface NovelDetailBody {
   wordCount:      number;
   seriesNavData?: SeriesNavData;
   coverUrl:       string;
+}
+
+// 系列基本信息 body
+interface SeriesInfoBody {
+  id: number;
+  title: string;
+  caption?: string;
+  userId: string;
+  userName: string;
+  publishedContentCount: number;  // 总作品数
+}
+
+// ✅ 新的（正确的）
+interface SeriesContentPage {
+  seriesContents?: RawPixivNovelItem[];
+}
+
+interface SeriesContentThumbnails {
+  novel?: RawPixivNovelItem[];
+}
+
+interface SeriesContentBody {
+  page?:        SeriesContentPage;        // 方式一：在 page 里
+  thumbnails?:  SeriesContentThumbnails;  // 方式二：在 thumbnails.novel 里
 }
 
 // ========================================
@@ -469,6 +518,63 @@ export class PixivService {
         currentPage: page,
         hasMore:     page * PAGE_SIZE < allIds.length,
         keyword:     ''
+      }
+    };
+  }
+
+  async fetchSeriesNovels(seriesId: string, page: number = 1): Promise<ServiceResult<PixivSeriesResult>> {
+    if (!seriesId) {
+      return { success: false, error: '系列ID不能为空' };
+    }
+
+    const limit = 30;
+    const lastOrder = (page - 1) * limit;
+
+    // ✅ 第一步：获取系列基本信息（不带 ?p= 参数）
+    const infoUrl = `${AJAX_BASE}/novel/series/${seriesId}`;
+    const infoResp = await this.get<PixivAjaxResponse<SeriesInfoBody>>(infoUrl, TIMEOUT_SEARCH);
+
+    if (!infoResp.success || !infoResp.data || infoResp.data.error) {
+      return { success: false, error: infoResp.data?.message || infoResp.error, code: infoResp.code };
+    }
+
+    // ✅ 第二步：获取系列内小说列表
+    const contentUrl = `${AJAX_BASE}/novel/series_content/${seriesId}?limit=${limit}&last_order=${lastOrder}&order_by=asc`;
+    const contentResp = await this.get<PixivAjaxResponse<SeriesContentBody>>(contentUrl, TIMEOUT_SEARCH);
+
+    if (!contentResp.success || !contentResp.data || contentResp.data.error) {
+      return { success: false, error: contentResp.data?.message || contentResp.error, code: contentResp.code };
+    }
+
+    const info = infoResp.data.body;
+    const content = contentResp.data.body;
+
+    console.info(`[PixivService] series_content body keys: ${JSON.stringify(Object.keys(content as object))}`);
+    console.info(`[PixivService] series_contents length: ${(content as Record<string, Object>)['series_contents']}`);
+
+    // 解析小说列表（注意字段名是 seriesContents，不是 novels）
+    const rawList: RawPixivNovelItem[] =
+      content?.page?.seriesContents ??
+        content?.thumbnails?.novel ??
+        [];
+
+    console.info(`[PixivService] 解析到小说数量: ${rawList.length}`);
+
+    const novels = rawList.map((raw) => parsePixivNovelFromRaw(raw));
+    const total: number = info?.publishedContentCount ?? 0;
+
+    return {
+      success: true,
+      data: {
+        seriesId:      String(info?.id ?? seriesId),
+        seriesTitle:   info?.title ?? '',
+        seriesCaption: info?.caption ?? '',
+        authorId:      String(info?.userId ?? ''),
+        authorName:    info?.userName ?? '',
+        novels,
+        total,
+        currentPage:   page,
+        hasMore:       lastOrder + limit < total
       }
     };
   }

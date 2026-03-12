@@ -925,6 +925,25 @@ export struct PixivSearchPage {
             .fontSize(11).fontColor(this.getColors().accentText)
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             .constraintSize({ maxWidth: '40%' }).margin({ right: 6 })
+            .onClick(() => {
+              // 阻止事件冒泡，避免触发卡片的其他点击
+              if (novel.series) {
+                router.pushUrl({
+                  url: 'pages/PixivSeriesPage',
+                  params: {
+                    seriesId: novel.series.id,
+                    seriesTitle: novel.series.title
+                  }
+                });
+              }
+            })
+            // 添加手势反馈
+            .gesture(
+              TapGesture({ count: 1 })
+                .onAction(() => {
+                  // 点击效果已在 onClick 中处理
+                })
+            )
         }
         Row() {
           // ① 翻译进行中时，显示转圈 Loading

@@ -405,6 +405,25 @@ export struct PixivFollowingPage {
             .fontSize(11).fontColor(this.getColors().accentText)
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             .constraintSize({ maxWidth: '40%' }).margin({ right: 6 })
+            .onClick(() => {
+              // 阻止事件冒泡，避免触发卡片的其他点击
+              if (novel.series) {
+                router.pushUrl({
+                  url: 'pages/PixivSeriesPage',
+                  params: {
+                    seriesId: novel.series.id,
+                    seriesTitle: novel.series.title
+                  }
+                });
+              }
+            })
+            // 添加手势反馈
+            .gesture(
+              TapGesture({ count: 1 })
+                .onAction(() => {
+                  // 点击效果已在 onClick 中处理
+                })
+            )
         }
 
         // ✅ 改动①：原来的 Text(novel.title) 换成这个可点击的内嵌 Row
