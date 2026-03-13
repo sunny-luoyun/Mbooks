@@ -170,7 +170,7 @@ struct PixivNovelReaderPage {
   // ── 阅读进度保存 ──
   private scroller: Scroller = new Scroller();          // Scroll 组件控制器
   private saveProgressTimer: number = -1;               // 防抖定时器
-  private readonly PROGRESS_SAVE_DELAY = 2000;          // 2秒防抖
+  private readonly PROGRESS_SAVE_DELAY = 800;          // 0.8秒防抖
   @State private hasRestoredPosition: boolean = false; // 防止重复恢复
 
   // ── ★ 离线模式：解析后的段落块列表（替代 cachedText + WebView）──
@@ -199,6 +199,8 @@ struct PixivNovelReaderPage {
   @State private translatedBlocks: ContentBlock[] = []; // 翻译后的段落块
   @State private showOriginal: boolean = true;       // 显示原文还是译文
   @State private renderBlocks: ContentBlock[] = [];
+
+  private lastKnownScrollY: number = 0;
 
   // ── 颜色模式监听 ──
   private configCallbackId:      number    = -1;
@@ -241,20 +243,16 @@ struct PixivNovelReaderPage {
   }
 
   aboutToDisappear(): void {
-    const ctx = getContext(this) as common.UIAbilityContext;
     if (this.configCallbackId !== -1) {
-      ctx.getApplicationContext().off('environment', this.configCallbackId);
+      getContext(this).getApplicationContext().off('environment', this.configCallbackId);
     }
-
-    // 离线模式退出时立即保存一次进度（不防抖）
     if (this.offlineMode && this.params?.novelId) {
-      if (this.saveProgressTimer !== -1) {
-        clearTimeout(this.saveProgressTimer);
-      }
-      const currentY = this.scroller.currentOffset().yOffset;
+      clearTimeout(this.saveProgressTimer);
+      // 直接发起异步，接受"尽力而为"语义
+      // 但要用 lastKnownScrollY 而不是实时读 scroller（scroller 在此时可能已失效）
       pixivCacheDB.saveReadingProgress(
         this.params.novelId,
-        currentY,
+        this.lastKnownScrollY,
         !this.showOriginal
       );
     }
@@ -741,10 +739,10 @@ struct PixivNovelReaderPage {
       .height('100%')
       .scrollable(ScrollDirection.Vertical)
       .edgeEffect(EdgeEffect.Spring)
-      .onScroll((xOffset: number, yOffset: number) => {
-        // 仅离线模式且非加载状态时保存进度
+      .onScroll((_x: number, _y: number) => {
+        this.lastKnownScrollY = this.scroller.currentOffset().yOffset; // 绝对值！
         if (this.offlineMode && !this.isLoading && this.params?.novelId) {
-          this.debouncedSaveProgress(yOffset);
+          this.debouncedSaveProgress(this.lastKnownScrollY);
         }
       })
 
