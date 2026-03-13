@@ -24,8 +24,8 @@ import {
 const BASE_URL  = 'https://www.pixiv.net';
 const AJAX_BASE = `${BASE_URL}/ajax`;
 
-const TIMEOUT_SEARCH = 15000;
-const TIMEOUT_FETCH  = 15000;
+const TIMEOUT_SEARCH = 2500;
+const TIMEOUT_FETCH  = 500;
 const PAGE_SIZE      = 48; // ✅ 修复：Pixiv /user/{id}/novels 接口每次最多 48 个ID，超过则 works 返回{}
 
 // ========================================
