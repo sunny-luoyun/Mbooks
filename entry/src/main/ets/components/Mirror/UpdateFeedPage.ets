@@ -3,7 +3,7 @@
 import router from '@ohos.router';
 import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
-import { CrawlerService } from '../../services/CrawlerService';
+import { CrawlerService } from '../../services/MirrorService';
 import { ThreadItem, ThreadItemWithMarks } from '../../models/SettingsModels';
 // import { Configuration } from '@ohos.arkui'; // 模块不存在，删除导入
 interface ResumeInfo {
