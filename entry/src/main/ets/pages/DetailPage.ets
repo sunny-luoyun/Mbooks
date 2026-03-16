@@ -41,6 +41,11 @@ struct DetailPage {
   @State isWatchedAuthor: boolean = false;
   @State isWatchedBook: boolean = false;
   @State errorMsg: string = '';
+  @State fullContent: string = '';           // 完整内容（仅用于分段加载）
+  @State displayContent: string = '';        // 当前显示的内容
+  @State currentChunk: number = 1;           // 当前已加载的块数
+  @State hasMore: boolean = false;           // 是否还有更多内容
+  private readonly CHUNK_SIZE: number = 20000; // 每块字符数（可根据屏幕性能调整）
 
   private crawler: CrawlerService | null = null;
   private settings: SettingsService | null = null;
@@ -83,6 +88,18 @@ struct DetailPage {
         errorPrefixes.some(prefix => content.startsWith(prefix));
 
         if (!isError) {
+          // ✅ 新逻辑：存储完整内容，并初始化分块显示
+          this.fullContent = content;                     // 保存完整内容
+          this.hasMore = content.length > this.CHUNK_SIZE; // 判断是否需要“加载更多”
+          this.currentChunk = 1;                           // 当前显示到第1块
+
+          // 截取第一块内容作为显示内容
+          this.displayContent = content.substring(0, this.CHUNK_SIZE);
+
+          // 获取本地信息（用于填充作者、标签等）
+          const localInfo = this.getLocalThreadInfo();
+
+          // 构建 threadDetail，并将 content 设置为 this.displayContent
           this.threadDetail = {
             threadId: this.threadId,
             title: localInfo?.title || this.title,
@@ -91,13 +108,14 @@ struct DetailPage {
             posts: [{
               pid: localInfo?.lastPid || '1',
               author: localInfo?.author || '未知',
-              content: content,
+              content: this.displayContent,   // ⭐ 注意这里不再是完整内容，而是片段
               time: localInfo?.lastTime || '未知'
             }],
             totalPosts: 1
           };
+
           this.isLoading = false;
-          return;
+          return; // 成功返回
         } else {
           if (attempt < maxRetry) {
             console.warn(`[DetailPage] 内容加载异常，第${attempt + 1}次重试，原因: ${content?.substring(0, 80)}`);
@@ -152,7 +170,8 @@ struct DetailPage {
     try {
       const filePath = `${(getContext(this) as Context).filesDir}/threads/${this.threadId}.txt`;
       if (fs.accessSync(filePath)) {
-        return fs.readTextSync(filePath);
+        // 使用异步读取，返回 Promise<string>
+        return await fs.readText(filePath);
       }
     } catch (e) {
       console.log('No local file:', e);
@@ -438,6 +457,29 @@ struct DetailPage {
     }
     .width('100%')
     .padding({ left: 16, right: 16 })
+  }
+
+  @Builder
+  LoadMoreButton() {
+    if (this.hasMore) {
+      Button(`加载更多 (已显示 ${this.currentChunk * this.CHUNK_SIZE} 字符)`)
+        .fontSize(14)
+        .width('100%')
+        .onClick(() => {
+          // 计算下一块的结束位置
+          const end = Math.min((this.currentChunk + 1) * this.CHUNK_SIZE, this.fullContent.length);
+          // 更新显示内容（这里采用“追加”方式，即一直显示到最新的 end）
+          this.displayContent = this.fullContent.substring(0, end);
+          this.currentChunk++;
+          this.hasMore = end < this.fullContent.length;
+
+          // 更新 threadDetail 中的 content，触发界面刷新
+          if (this.threadDetail) {
+            this.threadDetail.posts[0].content = this.displayContent;
+          }
+        })
+        .margin({ top: 12 });
+    }
   }
 
   @Builder
