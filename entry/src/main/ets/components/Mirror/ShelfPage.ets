@@ -4,10 +4,10 @@ import fs from '@ohos.file.fs';
 import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
 import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
-import { CrawlerService } from '../../services/MirrorService';
+import { CrawlerService } from '../../services/CrawlerService';
 import { DownloadResult } from '../../models/SettingsModels';
-import { ThreadMeta } from '../../services/MirrorDownloadService';
-import { DownloadService } from '../../services/MirrorDownloadService';
+import { ThreadMeta } from '../../services/DownloadService';
+import { DownloadService } from '../../services/DownloadService';
 
 interface PostTimeInfo {
   time: string;

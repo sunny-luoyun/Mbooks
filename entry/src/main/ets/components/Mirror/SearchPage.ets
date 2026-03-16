@@ -1,6 +1,6 @@
 // entry/src/main/ets/components/Mirror/SearchPage.ets
 import router from '@ohos.router';
-import { CrawlerService } from '../../services/MirrorService';
+import { CrawlerService } from '../../services/CrawlerService';
 import { ThreadItemWithMarks } from '../../models/SettingsModels';
 import common from '@ohos.app.ability.common';
 

@@ -1,12 +1,12 @@
 // entry/src/main/ets/pages/DetailPage.ets
 import router from '@ohos.router';
 import promptAction from '@ohos.promptAction';
-import { CrawlerService } from '../services/MirrorService';
+import { CrawlerService } from '../services/CrawlerService';
 import { SettingsService } from '../services/SettingsService';
 import { ThreadItem } from '../models/SettingsModels';
 import http from '@ohos.net.http';
 import fs from '@ohos.file.fs';
-import { DownloadService } from '../services/MirrorDownloadService';
+import { DownloadService } from '../services/DownloadService';
 import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
 
 interface ThreadDetail {
