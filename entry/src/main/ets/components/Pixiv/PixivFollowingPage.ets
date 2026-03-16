@@ -246,6 +246,17 @@ export struct PixivFollowingPage {
     }
   }
 
+  private openAuthorPageFromNovel(novel: PixivNovel): void {
+    router.pushUrl({
+      url: 'pages/PixivAuthorPage',
+      params: {
+        authorId: novel.authorId,
+        authorName: novel.author,
+        authorAvatar: ''
+      }
+    });
+  }
+
   private updateNovelStatus(novelId: string, status: CacheStatus): void {
     this.followingResults = this.followingResults.map(n => {
       if (n.id === novelId) {
@@ -469,9 +480,12 @@ export struct PixivFollowingPage {
 
       Row() {
         Text(novel.author)
-          .fontSize(12).fontColor(this.getColors().secondaryText)
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontSize(12)
+          .fontColor(this.getColors().secondaryText)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
           .constraintSize({ maxWidth: '50%' })
+          .onClick(() => this.openAuthorPageFromNovel(novel))   // 新增点击跳转
         Text(' · ' + formatTextLength(novel.textLength))
           .fontSize(12).fontColor(this.getColors().tertiaryText)
         Text(' · ' + formatPixivDate(novel.createDate))
