@@ -79,6 +79,8 @@ struct PixivAuthorPage {
   @State loadError: string = '';  // 新增：错误信息
   @State translatingIds: Set<string> = new Set()
   @State showingOriginalIds: Set<string> = new Set()
+  @State isOfflineMode: boolean = false;       // 是否处于离线模式
+  @State offlineCachedCount: number = 0;       // 离线缓存作品数（用于提示）
 
   private pixivService: PixivService | null = null;
   private configChangeCallback: () => void = () => {};
@@ -124,15 +126,25 @@ struct PixivAuthorPage {
     return getAuthorPageColors(this.colorMode);
   }
 
+  private async loadCachedAuthorNovels(): Promise<void> {
+    this.isOfflineMode = true;
+    const authorNovels = await pixivCacheDB.getCachedNovelsByAuthor(this.authorId);
+    // 按创建日期倒序排列（可选）
+    authorNovels.sort((a, b) => b.createDate.localeCompare(a.createDate));
+    this.novels = authorNovels;
+    this.offlineCachedCount = authorNovels.length;
+    this.hasMore = false; // 离线模式不支持分页
+  }
+
   private async loadAuthorNovels(page: number): Promise<void> {
     if (!this.authorId) return;
-    // ✅ 修复3：加 null 守卫防止 service 未初始化时调用
     if (!this.pixivService) return;
     this.isLoading = true;
     this.loadError = '';
     const result: ServiceResult<PixivSearchResult> = await this.pixivService.fetchAuthorNovels(this.authorId, page);
 
     if (result.success && result.data) {
+      this.isOfflineMode = false;                     // 成功时关闭离线模式
       const merged = await this.mergeCacheStatus(result.data.novels);
       if (page === 1) {
         this.novels = merged;
@@ -143,8 +155,14 @@ struct PixivAuthorPage {
       this.currentPage = page;
       pixivCacheDB.saveNovelMetaBatch(result.data.novels);
     } else {
-      this.loadError = result.error || '加载失败';  // 记录错误
-      promptAction.showToast({ message: this.loadError });
+      this.loadError = result.error || '加载失败';
+      // 关键：尝试加载离线缓存
+      await this.loadCachedAuthorNovels();
+      if (this.novels.length === 0) {
+        promptAction.showToast({ message: '无网络且无缓存，请联网后重试' });
+      } else {
+        promptAction.showToast({ message: '当前为离线模式，显示本地缓存' });
+      }
     }
     this.isLoading = false;
   }
@@ -223,9 +241,11 @@ struct PixivAuthorPage {
   }
 
   private loadMore(): void {
+    if (this.isOfflineMode) return;           // 新增
     if (!this.hasMore || this.isLoading) return;
     this.loadAuthorNovels(this.currentPage + 1);
   }
+
   private async cacheNovel(novel: PixivNovel): Promise<void> {
     if (this.cachingIds.has(novel.id)) return;
     // ✅ 修复：加 null 守卫防止 service 未初始化时调用
@@ -335,6 +355,30 @@ struct PixivAuthorPage {
         bottom: 12
       })
       .backgroundColor(this.getColors().headerBg)
+
+      // 顶部导航栏 Row(...) 之后，作者信息卡片 Row(...) 之前
+      if (this.isOfflineMode) {
+        Row() {
+          Text('📴').fontSize(14)
+          Text(this.offlineCachedCount > 0
+            ? `  离线模式 · 显示该作者 ${this.offlineCachedCount} 部已缓存作品`
+            : '  离线模式 · 该作者暂无缓存作品')
+            .fontSize(13)
+            .fontColor('#D48806')
+            .layoutWeight(1)
+          Text('重试')
+            .fontSize(13)
+            .fontColor('#FA8C16')
+            .padding({ left: 12, top: 4, bottom: 4 })
+            .onClick((): void => {
+              this.isOfflineMode = false;
+              this.loadAuthorNovels(1);
+            })
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+        .backgroundColor(this.colorMode === 0 ? '#2D2200' : '#FFFBE6')
+      }
 
       // 作者信息卡片
       Row() {
@@ -541,7 +585,14 @@ struct PixivAuthorPage {
               ? '#FF4D4F' : this.getColors().accentText)
             .backgroundColor(this.getColors().tagBg)
             .borderRadius(8).height(32).padding({ left: 12, right: 12 })
-            .onClick((): void => { this.cacheNovel(novel) })
+            .enabled(!this.isOfflineMode)   // 新增
+            .onClick((): void => {
+              if (this.isOfflineMode) {
+                promptAction.showToast({ message: '离线状态下无法缓存，请开启代理后重试' });
+                return;
+              }
+              this.cacheNovel(novel);
+            })
         }
         if (novel.cacheStatus === CacheStatus.CACHING) {
           Row() {
@@ -564,7 +615,14 @@ struct PixivAuthorPage {
           .backgroundColor(this.getColors().tagBg)
           .borderRadius(8).height(32).padding({ left: 12, right: 12 })
           .margin({ left: 8 })
-          .onClick((): void => { this.openOnlineReader(novel) })
+          .enabled(!this.isOfflineMode)   // 新增
+          .onClick((): void => {
+            if (this.isOfflineMode) {
+              promptAction.showToast({ message: '离线状态下请使用离线阅读' });
+              return;
+            }
+            this.openOnlineReader(novel);
+          })
       }
       .width('100%').margin({ top: 10 })
     }

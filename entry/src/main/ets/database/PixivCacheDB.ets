@@ -158,6 +158,26 @@ export class PixivCacheDB {
     }
   }
 
+  /**
+   * 获取指定作者的所有已缓存小说（仅 cache_status = 'cached'）
+   */
+  async getCachedNovelsByAuthor(authorId: string): Promise<PixivNovel[]> {
+    if (!this.checkReady()) return [];
+    const predicates = new relationalStore.RdbPredicates(TABLE_NOVELS);
+    predicates.equalTo(COL.AUTHOR_ID, authorId)
+      .and()
+      .equalTo(COL.CACHE_STATUS, CacheStatus.CACHED)
+      .orderByDesc(COL.CREATE_DATE); // 可按创建日期倒序，也可按 cached_at
+    try {
+      const cols = ALL_COLUMNS.filter(c => c !== COL.FULL_TEXT);
+      const result = await this.rdbStore!.query(predicates, cols);
+      return this.resultSetToNovels(result);
+    } catch (err) {
+      console.error(`[PixivCacheDB] getCachedNovelsByAuthor 失败: ${JSON.stringify(err)}`);
+      return [];
+    }
+  }
+
   private async upgradeDatabase(oldVersion: number, newVersion: number): Promise<void> {
     console.info(`[PixivCacheDB] 升级数据库: v${oldVersion} -> v${newVersion}`);
 
