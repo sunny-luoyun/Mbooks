@@ -425,9 +425,9 @@ export class CrawlerService {
       let title: string = titleText.replace(/<[^>]+>/g, "").trim();
 
       let author: string = "匿名";
-      let authorMatch = tr.match(/href="\/author\/\d+"[^>]*class="ui-link"[^>]*>([^<]+)<\/a>/);
+      let authorMatch = tr.match(/href="\/author\/\d+"[^>]*class="[^"]*ui-link[^"]*"[^>]*>([\s\S]*?)<\/a>/);
       if (authorMatch) {
-        author = authorMatch[1].trim();
+        author = authorMatch[1].replace(/<[^>]+>/g, "").trim();
       }
 
       let tags: string[] = [];
