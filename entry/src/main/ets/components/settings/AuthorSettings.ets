@@ -71,6 +71,7 @@ export struct AuthorSettings {
   @State authors: WatchedAuthor[] = [];
   @State newAuthorName: string = '';
   @State colorMode: number = 0;
+  @State showClearConfirm: boolean = false;
 
   private settingsService: SettingsService | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -153,6 +154,10 @@ export struct AuthorSettings {
 
   private clearAllAuthors(): void {
     if (this.authors.length === 0) return;
+    this.showClearConfirm = true;  // 打开确认对话框
+  }
+
+  private executeClearAllAuthors(): void {
     const names: string[] = [];
     for (let i: number = 0; i < this.authors.length; i++) {
       names.push(this.authors[i].name);
@@ -161,6 +166,7 @@ export struct AuthorSettings {
       this.settingsService?.removeWatchedAuthor(names[i]);
     }
     promptAction.showToast({ message: '已清空所有关注' });
+    this.showClearConfirm = false;  // 关闭确认对话框
   }
 
   build() {
@@ -311,6 +317,78 @@ export struct AuthorSettings {
             .margin({ top: 8 })
         }
         .margin({ top: 100 })
+      }
+      if (this.showClearConfirm) {
+        Stack() {
+          // 半透明遮罩背景
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor('rgba(0, 0, 0, 0.5)')
+            .onClick(() => {
+              // 点击遮罩自动关闭（可选，删除此行则遮罩不能关闭对话框）
+              this.showClearConfirm = false;
+            })
+
+          // 确认对话框卡片
+          Column() {
+            // 对话框标题
+            Text('确认清空')
+              .fontSize(18)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.getColors().primaryText)
+              .margin({ bottom: 12 })
+
+            // 对话框内容
+            Text('确定要清空所有关注的作者吗？')
+              .fontSize(14)
+              .fontColor(this.getColors().secondaryText)
+              .lineHeight(1.5)
+              .margin({ bottom: 24 })
+              .width('100%')
+
+            // 按钮行
+            Row() {
+              Button('取消')
+                .layoutWeight(1)
+                .height(44)
+                .backgroundColor(this.getColors().inputBg)
+                .fontColor(this.getColors().primaryText)
+                .fontSize(14)
+                .border({ width: 1, color: this.getColors().divider })
+                .borderRadius(8)
+                .onClick(() => {
+                  this.showClearConfirm = false;
+                })
+
+              Blank()
+                .width(12)
+
+              Button('确认清空')
+                .layoutWeight(1)
+                .height(44)
+                .backgroundColor(this.getColors().dangerText)
+                .fontColor(this.getColors().whiteText)
+                .fontSize(14)
+                .fontWeight(FontWeight.Medium)
+                .borderRadius(8)
+                .onClick(() => {
+                  this.executeClearAllAuthors();
+                })
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.SpaceBetween)
+          }
+          .width(280)
+          .padding(20)
+          .backgroundColor(this.getColors().cardBg)
+          .borderRadius(12)
+          .alignSelf(ItemAlign.Center)
+          .shadow({ radius: 16, color: 'rgba(0, 0, 0, 0.3)' })
+        }
+        .width('100%')
+        .height('100%')
+        .position({ x: 0, y: 0 })
       }
     }
     .width('100%')
