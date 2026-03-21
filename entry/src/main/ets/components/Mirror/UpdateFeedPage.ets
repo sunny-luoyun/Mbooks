@@ -140,6 +140,26 @@ export struct UpdateFeedPage {
     }
   }
 
+  // 标记所有新帖/更新帖为已读
+  private markAllAsRead(): void {
+    if (!this.crawler) return;
+
+    // 清除标记
+    this.crawler.clearAllMarks();
+
+    // 清空当前显示的列表
+    this.newThreads = [];
+    this.updatedThreads = [];
+
+    // 可选：重新加载本地数据（此时应无新帖/更新帖）
+    // this.loadExistingData(); // 如果上面清空后不需要显示，可以不调用
+
+    // 提示用户
+    promptAction.showToast({ message: '已清除所有新帖标记' });
+
+    // 如果存在断点，也可以选择不清除断点，保持原样
+  }
+
   loadExistingData(): void {
     if (this.crawler) {
       this.newThreads = this.crawler.searchLocal("").filter((t: ThreadItemWithMarks): boolean => t.isNew).slice(0, 20);
@@ -276,6 +296,17 @@ export struct UpdateFeedPage {
               .fontColor(this.getColors().updateTagBg)
           }
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+        // 新增：标记为已读按钮
+        if (this.newThreads.length > 0 || this.updatedThreads.length > 0) {
+          Button('标记为已读')
+            .fontSize(12)
+            .height(32)
+            .fontColor(this.getColors().primaryText)
+            .backgroundColor('#CCCCCC')   // 灰色背景，可根据设计调整
+            .margin({ right: 8 })
+            .onClick(() => this.markAllAsRead())
+        }
 
         if (this.hasBreakpoint) {
           Button('继续爬')

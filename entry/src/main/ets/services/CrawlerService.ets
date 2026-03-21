@@ -63,6 +63,28 @@ export class CrawlerService {
       enableBreakpoint: crawlerConfig.enableBreakpoint
     };
   }
+  // 清除所有帖子的 isNew 和 isUpdated 标记，并保存状态
+  public clearAllMarks(): void {
+    let state = this.loadState();
+    let changed = false;
+    // 遍历所有帖子，重置标记
+    const threadKeys = Object.keys(state.threads);
+    for (let i = 0; i < threadKeys.length; i++) {
+      const tid = threadKeys[i];
+      const thread = state.threads[tid];
+      if (thread.isNew || thread.isUpdated) {
+        thread.isNew = false;
+        thread.isUpdated = false;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.saveState(state);
+      console.log('[CrawlerService] 已清除所有新帖/更新标记');
+    } else {
+      console.log('[CrawlerService] 没有需要清除的标记');
+    }
+  }
 
   private get MAX_PAGES(): number {
     return this.currentConfig?.maxPagesPerRun || 5;
