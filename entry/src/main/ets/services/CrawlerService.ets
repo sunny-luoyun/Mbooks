@@ -431,29 +431,77 @@ export class CrawlerService {
 
   private parseHtmlByString(html: string): ThreadItem[] {
     let items: ThreadItem[] = [];
+
     let tbodyMatch = html.match(/<tbody[^>]*>([\s\S]*?)<\/tbody>/i);
     let content: string = tbodyMatch ? tbodyMatch[1] : html;
-    let rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-    let rowMatch: RegExpExecArray | null;
 
+    // 先把所有 tr 收集起来，才能取 idx+1 的“同一帖第二行”
+    let rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+    let trList: string[] = [];
+    let rowMatch: RegExpExecArray | null;
     while ((rowMatch = rowRegex.exec(content)) !== null) {
-      let tr: string = rowMatch[1];
+      trList.push(rowMatch[1]);
+    }
+
+    const extractUser = (anchorInnerHtml: string): string => {
+      // 去掉标签，按空白切分，取最后一段（适配你这种嵌套 div + small 字母）
+      let txt = anchorInnerHtml
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!txt) return "";
+      let parts = txt.split(" ").map(s => s.trim()).filter(Boolean);
+      return parts.length ? parts[parts.length - 1] : "";
+    };
+
+    for (let idx = 0; idx < trList.length; idx++) {
+      let tr: string = trList[idx];
+
       let idMatch = tr.match(/href="\/thread\/(\d+)"/);
       let titleMatch = tr.match(/<a href="\/thread\/\d+"[^>]*class="ui-link"[^>]*>([\s\S]*?)<\/a>/);
 
       if (!idMatch || !titleMatch) continue;
+
       let tid: string = idMatch[1];
       let titleText: string = titleMatch[1];
       let title: string = titleText.replace(/<[^>]+>/g, "").trim();
 
+      // ===================== 修复1：author（只从 mm-ttm-fp 取发布作者） =====================
       let author: string = "匿名";
-      let authorMatch = tr.match(/href="\/author\/\d+"[^>]*class="[^"]*ui-link[^"]*"[^>]*>([\s\S]*?)<\/a>/);
-      if (authorMatch) {
-        author = authorMatch[1].replace(/<[^>]+>/g, "").trim();
+      let nextTr: string | null = (idx + 1 < trList.length) ? trList[idx + 1] : null;
+
+      if (nextTr) {
+        // 只取“發佈於”那块 mm-ttm-fp
+        let fpSectionMatch = nextTr.match(/<span[^>]*class="[^"]*mm-ttm-fp[^"]*"[^>]*>([\s\S]*?)<\/span>/i);
+
+        if (fpSectionMatch) {
+          let fpSection = fpSectionMatch[1];
+          // 取第一个 /author/ 链接（发布作者）
+          let authorInFpMatch = fpSection.match(/href="\/author\/\d+"[^>]*>([\s\S]*?)<\/a>/i);
+          if (authorInFpMatch && authorInFpMatch[1]) {
+            let u = extractUser(authorInFpMatch[1]);
+            if (u) author = u;
+          }
+        }
+
+        // 兜底：如果 mm-ttm-fp 结构匹配失败，就从“發佈於”附近的第一个 author 取
+        if (author === "匿名") {
+          let publishBlock = nextTr.split("發佈於")[1];
+          if (publishBlock) {
+            let authorFallbackMatch = publishBlock.match(/href="\/author\/\d+"[^>]*>([\s\S]*?)<\/a>/i);
+            if (authorFallbackMatch && authorFallbackMatch[1]) {
+              let u = extractUser(authorFallbackMatch[1]);
+              if (u) author = u;
+            }
+          }
+        }
       }
 
+      // ===================== 原逻辑：tags / createTime =====================
       let tags: string[] = [];
-      let tagMatches = tr.matchAll(/href="\/tag\/\d+"[^>]*>(?:<span[^>]*>#<\/span>)?([^<]+)<\/a>/g);
+      let tagMatches = tr.matchAll(
+        /href="\/tag\/\d+"[^>]*>(?:<span[^>]*>#<\/span>)?([^<]+)<\/a>/g
+      );
       for (let m of tagMatches) {
         let tag: string = m[1].trim();
         if (tag && !tag.includes('report_problem')) tags.push(tag);
@@ -465,17 +513,7 @@ export class CrawlerService {
         createTime = timeMatch1[1];
       }
 
-      let lastUser: string = "无回复";
-      let authorRegex = /href="\/author\/\d+"[^>]*class="ui-link"[^>]*>([^<]+)<\/a>/g;
-      let lastAuthorMatch: RegExpExecArray | null = null;
-      let tempMatch: RegExpExecArray | null;
-      while ((tempMatch = authorRegex.exec(tr)) !== null) {
-        lastAuthorMatch = tempMatch;
-      }
-      if (lastAuthorMatch) {
-        lastUser = lastAuthorMatch[1].trim();
-      }
-
+      // ===================== 原逻辑：lastTime =====================
       let lastTime: string = "刚刚";
       let timeRegex = /<time[^>]*>([^<]+)<\/time>/g;
       let lastTimeMatch: RegExpExecArray | null = null;
@@ -487,11 +525,23 @@ export class CrawlerService {
         lastTime = lastTimeMatch[1].trim();
       }
 
+      // ===================== 修复2：lastUser（放宽 class 限定，取该 tr 里的作者链接） =====================
+      let lastUser: string = "无回复";
+      let lastAuthorRegex = /href="\/author\/\d+"[^>]*>([\s\S]*?)<\/a>/gi;
+      let lastM: RegExpExecArray | null;
+      let lastUserCandidate = "";
+      while ((lastM = lastAuthorRegex.exec(tr)) !== null) {
+        if (lastM[1]) lastUserCandidate = extractUser(lastM[1]);
+      }
+      if (lastUserCandidate) lastUser = lastUserCandidate;
+
+      // ===================== 原逻辑：lastPid =====================
       let lastPid: number = 0;
       let pidMatch = tr.match(/href="\/thread\/\d+\/last#p(\d+)"/);
       if (pidMatch) {
         lastPid = parseInt(pidMatch[1]);
       }
+
       items.push({
         threadId: tid,
         title: title,
