@@ -67,7 +67,6 @@ export interface ThreadItem {
   isUpdated: boolean;
   tags: string[];
   createTime?: string;
-  lastUser?: string;
   prevLastTime?: string;
 }
 

@@ -296,7 +296,6 @@ export class CrawlerService {
         lastTime: t.lastTime,
         tags: t.tags,
         createTime: t.createTime,
-        lastUser: t.lastUser,
         isNew: t.isNew,
         isUpdated: t.isUpdated,
         prevLastPid: t.prevLastPid,
@@ -366,7 +365,6 @@ export class CrawlerService {
         lastTime: t.lastTime,
         tags: t.tags,
         createTime: t.createTime,
-        lastUser: t.lastUser,
         isNew: t.isNew,
         isUpdated: t.isUpdated,
         prevLastPid: t.prevLastPid,
@@ -471,28 +469,24 @@ export class CrawlerService {
       let nextTr: string | null = (idx + 1 < trList.length) ? trList[idx + 1] : null;
 
       if (nextTr) {
-        // 只取“發佈於”那块 mm-ttm-fp
-        let fpSectionMatch = nextTr.match(/<span[^>]*class="[^"]*mm-ttm-fp[^"]*"[^>]*>([\s\S]*?)<\/span>/i);
+        // 方法1：直接找 <span class="mm-ttm-fp"> 的内容
+        let fpBlockMatch = nextTr.match(/<span\s+class="mm-ttm-fp"[^>]*>([\s\S]*?)<\/span>\s*<span\s+class="mm-ttm-sp"/);
 
-        if (fpSectionMatch) {
-          let fpSection = fpSectionMatch[1];
-          // 取第一个 /author/ 链接（发布作者）
-          let authorInFpMatch = fpSection.match(/href="\/author\/\d+"[^>]*>([\s\S]*?)<\/a>/i);
-          if (authorInFpMatch && authorInFpMatch[1]) {
-            let u = extractUser(authorInFpMatch[1]);
-            if (u) author = u;
+        if (fpBlockMatch) {
+          let fpBlock = fpBlockMatch[1];
+
+          // 在 fp block 中找第一个 <span>xxx</span>
+          // 这个 span 出现在 <a class="mm-ttm-av"> 标签里
+          let spanMatch = fpBlock.match(/<span>([^<]+)<\/span>/);
+
+          if (spanMatch && spanMatch[1]) {
+            author = spanMatch[1].trim();
           }
-        }
-
-        // 兜底：如果 mm-ttm-fp 结构匹配失败，就从“發佈於”附近的第一个 author 取
-        if (author === "匿名") {
-          let publishBlock = nextTr.split("發佈於")[1];
-          if (publishBlock) {
-            let authorFallbackMatch = publishBlock.match(/href="\/author\/\d+"[^>]*>([\s\S]*?)<\/a>/i);
-            if (authorFallbackMatch && authorFallbackMatch[1]) {
-              let u = extractUser(authorFallbackMatch[1]);
-              if (u) author = u;
-            }
+        } else {
+          // 方法2：如果方法1失败，用备选方案（直接在整个 nextTr 中找第一个 mm-ttm-av）
+          let authorMatch = nextTr.match(/<a[^>]*class="[^"]*mm-ttm-av[^"]*"[^>]*>[\s\S]*?<span>([^<]+)<\/span>/);
+          if (authorMatch && authorMatch[1]) {
+            author = authorMatch[1].trim();
           }
         }
       }
@@ -525,15 +519,6 @@ export class CrawlerService {
         lastTime = lastTimeMatch[1].trim();
       }
 
-      // ===================== 修复2：lastUser（放宽 class 限定，取该 tr 里的作者链接） =====================
-      let lastUser: string = "无回复";
-      let lastAuthorRegex = /href="\/author\/\d+"[^>]*>([\s\S]*?)<\/a>/gi;
-      let lastM: RegExpExecArray | null;
-      let lastUserCandidate = "";
-      while ((lastM = lastAuthorRegex.exec(tr)) !== null) {
-        if (lastM[1]) lastUserCandidate = extractUser(lastM[1]);
-      }
-      if (lastUserCandidate) lastUser = lastUserCandidate;
 
       // ===================== 原逻辑：lastPid =====================
       let lastPid: number = 0;
@@ -550,7 +535,6 @@ export class CrawlerService {
         lastTime: lastTime,
         tags: tags,
         createTime: createTime,
-        lastUser: lastUser,
         isNew: false,
         isUpdated: false
       } as ThreadItem);

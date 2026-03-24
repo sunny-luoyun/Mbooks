@@ -150,7 +150,6 @@ struct DetailPage {
         lastTime: item.lastTime,
         tags: item.tags,
         createTime: item.createTime || '',
-        lastUser: item.lastUser || item.author,
         isNew: item.isNew,
         isUpdated: item.isUpdated,
         prevLastPid: item.prevLastPid,
