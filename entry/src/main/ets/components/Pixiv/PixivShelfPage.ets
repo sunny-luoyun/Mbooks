@@ -203,6 +203,16 @@ struct AuthorDetailPage {
               .fontColor(this.getColors().primaryText)
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .onClick(() => {
+                router.pushUrl({
+                  url: 'pages/PixivAuthorPage',
+                  params: {
+                    authorId: this.authorGroup.authorId,
+                    authorName: this.authorGroup.authorName,
+                    authorAvatar: ''   // 本地缓存没有头像，传空即可
+                  }
+                });
+              })
 
             Text(`${this.authorGroup.totalCount} 本缓存  ·  ${this.authorGroup.seriesMap.size} 个系列`)
               .fontSize(13)
@@ -441,6 +451,15 @@ struct SeriesDetailPage {
                 .fontColor(this.getColors().primaryText)
                 .maxLines(2)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .onClick(() => {
+                  router.pushUrl({
+                    url: 'pages/PixivSeriesPage',
+                    params: {
+                      seriesId: this.seriesGroup.seriesId,
+                      seriesTitle: this.seriesGroup.seriesTitle
+                    }
+                  });
+                })
               Text(`${this.authorName}  ·  共 ${this.seriesGroup.novels.length} 话已缓存`)
                 .fontSize(13)
                 .fontColor(this.getColors().secondaryText)
