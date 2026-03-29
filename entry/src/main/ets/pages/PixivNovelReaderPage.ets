@@ -172,6 +172,7 @@ struct PixivNovelReaderPage {
   private saveProgressTimer: number = -1;               // 防抖定时器
   private readonly PROGRESS_SAVE_DELAY = 800;          // 0.8秒防抖
   @State private hasRestoredPosition: boolean = false; // 防止重复恢复
+  @State private hasReachedEnd: boolean = false;
 
   // ── ★ 离线模式：解析后的段落块列表（替代 cachedText + WebView）──
   @State private contentBlocks: ContentBlock[] = [];
@@ -201,6 +202,7 @@ struct PixivNovelReaderPage {
   @State private renderBlocks: ContentBlock[] = [];
 
   private lastKnownScrollY: number = 0;
+  private lastScrollCheckY: number = 0;
 
   // ── 颜色模式监听 ──
   private configCallbackId:      number    = -1;
@@ -246,15 +248,22 @@ struct PixivNovelReaderPage {
     if (this.configCallbackId !== -1) {
       getContext(this).getApplicationContext().off('environment', this.configCallbackId);
     }
+
     if (this.offlineMode && this.params?.novelId) {
       clearTimeout(this.saveProgressTimer);
-      // 直接发起异步，接受"尽力而为"语义
-      // 但要用 lastKnownScrollY 而不是实时读 scroller（scroller 在此时可能已失效）
+
+      // ★ 改进的逻辑：精确判断是否已阅读完成
+      const isFinished = this.isContentAtEnd();
+
+      const progressToSave = isFinished ? 0 : this.lastKnownScrollY;
+
       pixivCacheDB.saveReadingProgress(
         this.params.novelId,
-        this.lastKnownScrollY,
+        progressToSave,
         !this.showOriginal
       );
+
+      console.info(`[aboutToDisappear] 保存进度: ${progressToSave} (finished=${isFinished})`);
     }
   }
 
@@ -303,6 +312,45 @@ struct PixivNovelReaderPage {
       promptAction.showToast({ message: '加载失败，请重试' });
     } finally {
       this.isLoading = false;
+    }
+  }
+
+  private isContentAtEnd(): boolean {
+    try {
+      const scrollOffset = this.scroller.currentOffset();
+      const currentY = scrollOffset.yOffset;
+
+      // 这是关键：获取 Scroll 组件的实际高度和内容高度
+      // 但鸿蒙的 Scroll 没有直接 API，需要用估算或其他方式
+
+      // 方案 1：用 renderBlocks 估算总高度（保留你现在的方式）
+      let estimatedContentHeight = 0;
+      for (let block of this.renderBlocks) {
+        if (block.type === 'chapter') {
+          estimatedContentHeight += this.fontSize * 1.1 * 2 + 28;
+        } else if (block.type === 'hr') {
+          estimatedContentHeight += 48;
+        } else if (block.type === 'blank') {
+          estimatedContentHeight += this.fontSize * 0.6;
+        } else {
+          const lines = Math.ceil(block.text.length / 40);
+          estimatedContentHeight += this.fontSize * 1.9 * lines + 20;
+        }
+      }
+
+      // 视口高度（实际上应该获取组件的真实高度，这里暂时用 500）
+      const viewportHeight = 500;
+      const scrollableHeight = estimatedContentHeight - viewportHeight;
+
+      // 判断：是否滚到了最后 5%（更严格的判断）
+      // currentY 接近 scrollableHeight 时，说明快到底了
+      const isAtEnd = currentY >= scrollableHeight * 0.95;
+
+      console.info(`[isContentAtEnd] currentY=${currentY}, scrollableHeight≈${scrollableHeight}, isAtEnd=${isAtEnd}`);
+      return isAtEnd;
+    } catch (e) {
+      console.error(`[isContentAtEnd] 异常: ${JSON.stringify(e)}`);
+      return false;
     }
   }
 
@@ -445,6 +493,62 @@ struct PixivNovelReaderPage {
 
     this.isTranslating = false;
     promptAction.showToast({ message: '全文翻译完成' });
+  }
+
+  /**
+   * 检测是否已阅读到底部
+   */
+  private checkIfReachedEnd(): void {
+    const TAG = '[PixivReader][checkIfReachedEnd]';
+
+    try {
+      const scrollOffset = this.scroller.currentOffset();
+      const currentY = scrollOffset.yOffset;
+
+      // ✅ 计算内容总高度（通过渲染块估算）
+      // 每个段落大约 fontSize * 1.9 的高度 + padding
+      let estimatedContentHeight = 0;
+      for (let block of this.renderBlocks) {
+        if (block.type === 'chapter') {
+          estimatedContentHeight += this.fontSize * 1.1 * 2 + 28; // 标题更高
+        } else if (block.type === 'hr') {
+          estimatedContentHeight += 48; // 分页线
+        } else if (block.type === 'blank') {
+          estimatedContentHeight += this.fontSize * 0.6;
+        } else {
+          // 普通段落
+          const lines = Math.ceil(block.text.length / 40); // 估算行数
+          estimatedContentHeight += this.fontSize * 1.9 * lines + 20; // padding
+        }
+      }
+
+      // ✅ 视口高度（假设约500px，或从组件尺寸获取）
+      const viewportHeight = 500;
+      const totalScrollableHeight = estimatedContentHeight - viewportHeight;
+
+      // ✅ 判断是否在最后10%范围内（容差更大，避免误触）
+      const isAtBottom = currentY >= totalScrollableHeight * 0.9;
+
+      if (isAtBottom && currentY > 500) { // 至少要滚了很远
+        console.info(`${TAG} 检测到阅读完成！currentY=${currentY}, total≈${totalScrollableHeight}px`);
+
+        if (this.params?.novelId && !this.hasReachedEnd) { // ← 新增标志防重复
+          this.hasReachedEnd = true; // 标记已显示过提示
+
+          pixivCacheDB.saveReadingProgress(
+            this.params.novelId,
+            0,
+            !this.showOriginal
+          );
+
+          promptAction.showToast({
+            message: '✓ 阅读完成！下次将从头开始'
+          });
+        }
+      }
+    } catch (e) {
+      console.error(`${TAG} 异常: ${JSON.stringify(e)}`);
+    }
   }
 
   // ========================================
@@ -740,9 +844,10 @@ struct PixivNovelReaderPage {
       .scrollable(ScrollDirection.Vertical)
       .edgeEffect(EdgeEffect.Spring)
       .onScroll((_x: number, _y: number) => {
-        this.lastKnownScrollY = this.scroller.currentOffset().yOffset; // 绝对值！
+        this.lastKnownScrollY = this.scroller.currentOffset().yOffset;
         if (this.offlineMode && !this.isLoading && this.params?.novelId) {
           this.debouncedSaveProgress(this.lastKnownScrollY);
+          // ★ 移除 checkIfReachedEnd() 调用
         }
       })
 
