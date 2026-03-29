@@ -186,10 +186,16 @@ export const DEFAULT_PIXIV_CONFIG: PixivUserConfig = {
   defaultSortOrder: PixivSortOrder.DATE_DESC,
   autoCache: false
 };
-
 // ========================================
 // 工具函数：从 API 原始 JSON 构造 PixivNovel
 // ========================================
+// Pixiv Ajax API 返回的系列信息原始结构（内部用，不导出）
+export interface RawPixivSeriesInfo {
+  id?: number;
+  contentOrder?: number;
+  viewableType?: number;
+}
+
 // Pixiv Ajax API 返回的单条小说原始结构（内部用，不导出）
 export interface RawPixivNovelItem {
   id: string;
@@ -207,12 +213,23 @@ export interface RawPixivNovelItem {
   seriesId?: string;
   seriesTitle?: string;
   seriesOrder?: number;
+  seriesContentOrder?: number;           // 方式1：thumbnails.novel 中的顺序
+  series?: RawPixivSeriesInfo;           // 方式2：page.seriesContents 中的顺序
   bookmarkCount: number;
   viewCount: number;
   commentCount: number;
 }
 
 export function parsePixivNovelFromRaw(raw: RawPixivNovelItem): PixivNovel {
+
+  let order = 0;
+  if (raw.seriesContentOrder !== undefined) {
+    order = raw.seriesContentOrder;
+  } else if (raw.series?.contentOrder !== undefined) {
+    order = raw.series.contentOrder;
+  } else if (raw.seriesOrder !== undefined) {
+    order = raw.seriesOrder;
+  }
   return {
     id:           raw.id,
     title:        raw.title,
@@ -220,7 +237,7 @@ export function parsePixivNovelFromRaw(raw: RawPixivNovelItem): PixivNovel {
     author:       raw.userName,
     authorId:     raw.userId,
     coverUrl:     raw.url,
-    tags:         (raw.tags ?? []).map((t: string): PixivTag => ({ name: t })),
+    tags:         (raw.tags ?? []).map((t: string) => ({ name: t } as PixivTag)),
     textLength: raw.textCount ?? raw.wordCount ?? 0,
     pageCount:    raw.pageCount ?? 1,
     createDate:   raw.createDate,
@@ -228,7 +245,7 @@ export function parsePixivNovelFromRaw(raw: RawPixivNovelItem): PixivNovel {
     series: raw.seriesId ? {
       id:    raw.seriesId,
       title: raw.seriesTitle ?? '',
-      order: raw.seriesOrder
+      order: order
     } : undefined,
     bookmarkCount: raw.bookmarkCount ?? 0,
     viewCount:     raw.viewCount ?? 0,
