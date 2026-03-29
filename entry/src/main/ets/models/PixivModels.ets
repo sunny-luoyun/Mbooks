@@ -221,7 +221,7 @@ export interface RawPixivNovelItem {
 }
 
 export function parsePixivNovelFromRaw(raw: RawPixivNovelItem): PixivNovel {
-
+  // 提取 order（优先级不变）
   let order = 0;
   if (raw.seriesContentOrder !== undefined) {
     order = raw.seriesContentOrder;
@@ -230,6 +230,23 @@ export function parsePixivNovelFromRaw(raw: RawPixivNovelItem): PixivNovel {
   } else if (raw.seriesOrder !== undefined) {
     order = raw.seriesOrder;
   }
+
+  // 构建系列对象
+  let series: PixivSeries | undefined = undefined;
+  if (raw.seriesId) {
+    series = {
+      id: raw.seriesId,
+      title: raw.seriesTitle ?? '',
+      order: order
+    };
+  } else if (raw.series) {
+    series = {
+      id: String(raw.series.id),
+      title: raw.seriesTitle ?? '',   // raw.series 没有 title，仍用顶层字段或留空
+      order: raw.series.contentOrder ?? order
+    };
+  }
+
   return {
     id:           raw.id,
     title:        raw.title,
@@ -238,20 +255,15 @@ export function parsePixivNovelFromRaw(raw: RawPixivNovelItem): PixivNovel {
     authorId:     raw.userId,
     coverUrl:     raw.url,
     tags:         (raw.tags ?? []).map((t: string) => ({ name: t } as PixivTag)),
-    textLength: raw.textCount ?? raw.wordCount ?? 0,
+    textLength:   raw.textCount ?? raw.wordCount ?? 0,
     pageCount:    raw.pageCount ?? 1,
     createDate:   raw.createDate,
     updateDate:   raw.updateDate,
-    series: raw.seriesId ? {
-      id:    raw.seriesId,
-      title: raw.seriesTitle ?? '',
-      order: order
-    } : undefined,
+    series:       series,
     bookmarkCount: raw.bookmarkCount ?? 0,
     viewCount:     raw.viewCount ?? 0,
     commentCount:  raw.commentCount ?? 0,
-    // 本地状态初始化为未缓存
-    cacheStatus: CacheStatus.NOT_CACHED
+    cacheStatus:   CacheStatus.NOT_CACHED
   };
 }
 

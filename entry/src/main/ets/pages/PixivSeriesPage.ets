@@ -160,12 +160,15 @@ struct PixivSeriesPage {
           novel.author = apiAuthorName;
         }
         if (!novel.series) {
+          // 只有真的没有系列信息时才新建（但 order 为 0）
           novel.series = { id: this.seriesId, title: apiSeriesTitle || this.seriesTitle, order: 0 };
         } else {
+          // 已有 series，仅补全缺失的 id 和 title
           if (!novel.series.id) novel.series.id = this.seriesId;
           if (!novel.series.title && (apiSeriesTitle || this.seriesTitle)) {
             novel.series.title = apiSeriesTitle || this.seriesTitle;
           }
+          // 保留已有的 order（已在 parsePixivNovelFromRaw 中正确设置）
         }
       });
 
