@@ -445,6 +445,27 @@ struct PixivNovelReaderPage {
     }, this.PROGRESS_SAVE_DELAY);
   }
 
+  /**
+   * 将短段落合并成较长段落，控制每段最大字符数
+   * 空行不参与合并，直接过滤（翻译时无需处理空行）
+   */
+  private mergeShortParagraphs(paragraphs: string[], maxChars: number = 2000): string[] {
+    const merged: string[] = [];
+    let current = '';
+    for (const para of paragraphs) {
+      const text = para.trim();
+      if (!text) continue;  // 空行跳过，不拆段
+      if (current && (current.length + text.length + 1) > maxChars) {
+        merged.push(current);
+        current = text;
+      } else {
+        current = current ? current + '\n' + text : text;
+      }
+    }
+    if (current) merged.push(current);
+    return merged;
+  }
+
   // ✅ 新增：执行全文翻译
   private async performFullTranslation(novelId: string, originalText: string): Promise<void> {
     this.isTranslating = true;
@@ -454,11 +475,12 @@ struct PixivNovelReaderPage {
     await pixivCacheDB.updateTranslationProgress(novelId, 0, 'in_progress');
 
     const paragraphs = originalText.split('\n');
+    const mergedParagraphs = this.mergeShortParagraphs(paragraphs, 2000);  // 新增：合并短段落
     const service = getDeepSeekService();
 
     // ✅ 只用进度回调更新进度条，不在回调里收集结果
     const results = await service.translateParagraphs(
-      paragraphs,
+      mergedParagraphs,
       (current, total, _translated) => {
         this.translationProgress = Math.floor((current / total) * 100);
       }
@@ -468,12 +490,10 @@ struct PixivNovelReaderPage {
     // 注意：translateParagraphs 对空行 push 了 {success:true, translatedText:''}
     // 所以 results.length === paragraphs.length，一一对应
     const translatedParagraphs = results.map((r, i) => {
-      if (!paragraphs[i].trim()) {
-        // 空行：直接保留空字符串
-        return '';
+      if (!mergedParagraphs[i]) {
+        return '';  // 空段
       }
-      // 翻译成功取译文，失败则保留原文（避免内容丢失）
-      return (r.success && r.translatedText) ? r.translatedText : paragraphs[i];
+      return (r.success && r.translatedText) ? r.translatedText : mergedParagraphs[i];
     });
 
     const fullTranslated = translatedParagraphs.join('\n');

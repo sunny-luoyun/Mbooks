@@ -229,20 +229,11 @@ export class DeepSeekService {
 2. 如果标题包含专有名词（人名、地名等），使用常见译名
 3. 翻译要简洁准确
 4. 只返回翻译后的中文标题，不要添加任何解释`
-      : `你是一个专业的日文小说翻译。请将以下日文小说内容翻译成中文。
+      : `你是专业日文小说翻译。将以下日文准确、流畅地译成中文，严格保留原文段落与标点格式，不生硬直译。只输出译文，不附加解释。`;
 
-翻译要求：
-1. 保持原文的风格、语气和情感
-2. 人物对话要自然流畅
-3. 专有名词（人名、地名等）保持一致性
-4. 中文表达要地道，避免生硬的直译
-5. 保留原文的段落格式
-6. 如果遇到拟声词，用中文常见的表达方式
-7. 保持原文的标点符号使用习惯
-
-只返回翻译后的中文内容，不要添加任何解释或额外内容。`;
-
-    const userPrompt = text;
+    // ★ 添加固定前缀，使所有 user 消息开头一致，便于缓存命中
+    const PREFIX = '请将以下日文翻译成中文：\n';
+    const userPrompt = PREFIX + text;
 
     const messages: DeepSeekMessage[] = [
       { role: 'system', content: systemPrompt } as DeepSeekMessage,
@@ -253,7 +244,7 @@ export class DeepSeekService {
       model: this.model,
       messages: messages,
       temperature: isTitle ? 0.8 : 1.3,
-      max_tokens: isTitle ? 100 : 4000
+      max_tokens: isTitle ? 100 : 8000
     };
 
     const httpRequest = http.createHttp();
@@ -356,80 +347,69 @@ export class DeepSeekService {
 
     const results: TranslationResult[] = new Array(total);
     let completedCount = 0;
-    let nextIndex = 0;
-    const activePromises = new Set<Promise<void>>();
     const controller = new AdaptiveConcurrencyController();
 
-    let finalResolve: (() => void) | null = null;
-    const finalPromise = new Promise<void>((resolve) => {
-      finalResolve = resolve;
-    });
-
-    // ✅ 修复1：明确返回类型 Promise<void>，移除内部对 activePromise 的引用
-    const processParagraph = async (index: number): Promise<void> => {
+    // 辅助函数：处理单个段落并统计
+    const handleParagraph = async (index: number): Promise<void> => {
       const text = paragraphs[index];
-      let result: TranslationResult;
-
       if (!text.trim()) {
-        result = { success: true, translatedText: '' };
+        results[index] = { success: true, translatedText: '' };
       } else {
         try {
-          result = await this.translateText(text, false);
-          if (result.success) {
-            controller.onSuccess();
-          } else {
-            if (result.error?.includes('请求过于频繁')) {
-              controller.onFailure('rate_limit');
-            } else if (result.error?.includes('超时') || result.error?.includes('timeout')) {
-              controller.onFailure('timeout');
-            } else {
-              controller.onFailure('other');
-            }
-          }
+          results[index] = await this.translateText(text, false);
         } catch (e) {
-          result = { success: false, error: '未知异常' };
-          controller.onFailure('other');
+          results[index] = { success: false, error: '未知异常' };
         }
       }
-
-      results[index] = result;
       completedCount++;
-      onProgress?.(completedCount, total, result.translatedText || '');
-      // 注意：不在这里 delete，交给 dispatchNext 里的 finally 处理
+      onProgress?.(completedCount, total, results[index].translatedText || '');
+      // 通知控制器（成功 / 失败分类）
+      const res = results[index];
+      if (res.success) {
+        controller.onSuccess();
+      } else {
+        // 根据错误信息简单分类
+        if (res.error?.includes('频繁')) controller.onFailure('rate_limit');
+        else if (res.error?.includes('超时') || res.error?.includes('timeout')) controller.onFailure('timeout');
+        else controller.onFailure('other');
+      }
     };
 
-    // ✅ 修复2：在 dispatchNext 里用局部变量 p 持有 Promise 引用，
-    //          通过 .finally() 删除，彻底消除 activePromise 作用域问题；
-    //          .catch 回调参数显式标注 Error 类型，消除 any/unknown 报错
+    // ── 1. 缓存预热：前两个请求必须串行，且两个都要发送 ──
+    if (total >= 2) {
+      await handleParagraph(0);
+      await handleParagraph(1);
+      await new Promise<void>((resolve) => setTimeout(resolve, 5000));
+    } else if (total === 1) {
+      // 只有一段，直接翻译，无需预热
+      await handleParagraph(0);
+      return results;
+    }
+
+    // ── 2. 剩余段落使用并发调度 ──
+    let nextIndex = 2;  // 已预热前两个
+    const activePromises = new Set<Promise<void>>();
+    let finalResolve: (() => void) | null = null;
+    const finalPromise = new Promise<void>((resolve) => { finalResolve = resolve; });
+
     const dispatchNext = (): void => {
       while (activePromises.size < controller.getCurrentWindow() && nextIndex < total) {
         const index = nextIndex++;
-
-        // 先声明变量，再赋值，让 finally 闭包可以正确捕获
-        let p: Promise<void>;
-        p = processParagraph(index)
-          .catch((err: Error): void => {
-            // ✅ err 显式声明为 Error，解决 arkts-no-any-unknown 报错
-            console.error(`段落 ${index} 处理异常: ${err.message}`);
-          })
-          .finally((): void => {
-            // ✅ 在这里删除自身引用，完全不依赖外部 activePromise 变量
+        let p: Promise<void> = handleParagraph(index)
+          .catch((err: Error) => console.error(`段落 ${index} 异常:`, err.message))
+          .finally(() => {
             activePromises.delete(p);
-            // 每次有任务完成，都尝试继续派发或判断是否全部完成
             dispatchNext();
           });
-
         activePromises.add(p);
       }
-
-      // 所有段落已派发且无活跃请求 → 全部完成
       if (nextIndex >= total && activePromises.size === 0) {
         finalResolve?.();
       }
     };
 
+    // 预热完成后启动并发调度
     dispatchNext();
-
     await finalPromise;
     return results;
   }
