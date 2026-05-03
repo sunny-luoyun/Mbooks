@@ -228,9 +228,16 @@ export class PixivCacheDB {
 
     // 先检查是否已有缓存，避免覆盖 full_text
     const existing = await this.getNovelById(novel.id);
-    const keepCacheStatus = existing?.cacheStatus ?? CacheStatus.NOT_CACHED;
-    const keepFullText    = existing?.fullText    ?? '';
-    const keepCachedAt    = existing?.cachedAt    ?? '';
+    const keepFullText         = existing?.fullText    ?? '';
+    const keepCachedAt         = existing?.cachedAt    ?? '';
+    const keepCacheStatus      = existing?.cacheStatus ?? CacheStatus.NOT_CACHED;
+    const keepTitleTranslated  = existing?.titleTranslated     ?? '';   // 新增
+    const keepHasTitleTrans    = existing?.hasTitleTranslation ?? false; // 新增
+    const keepFullTranslated   = existing?.fullTextTranslated  ?? '';   // 新增
+    const keepHasFullTrans     = existing?.hasFullTranslation  ?? false; // 新增
+    const keepTransStatus      = existing?.translationStatus   ?? 'none';// 新增
+    const keepTransProgress    = existing?.translationProgress ?? 0;     // 新增
+
     const values: relationalStore.ValuesBucket = {
       'id':             novel.id,
       'title':          novel.title,
@@ -253,12 +260,13 @@ export class PixivCacheDB {
       'cache_status':   keepCacheStatus,
       'cached_at':      keepCachedAt,
       'full_text':      keepFullText,
-      'title_translated':      novel.titleTranslated ?? '',
-      'has_title_translation': novel.hasTitleTranslation ? 1 : 0,
-      'full_text_translated':  novel.fullTextTranslated ?? '',
-      'has_full_translation':  novel.hasFullTranslation ? 1 : 0,
-      'translation_status':    novel.translationStatus ?? 'none',
-      'translation_progress':  novel.translationProgress ?? 0
+      'title_translated':      keepTitleTranslated ?? '',
+      'has_title_translation': keepHasTitleTrans ? 1 : 0,
+      'full_text_translated':  keepFullTranslated ?? '',
+      'has_full_translation':  keepHasFullTrans ? 1 : 0,
+      'translation_status':    keepTransStatus ?? 'none',
+      'translation_progress':  keepTransProgress ?? 0
+
     };
 
     try {

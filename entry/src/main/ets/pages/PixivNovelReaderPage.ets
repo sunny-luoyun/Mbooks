@@ -6,6 +6,7 @@ import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
 import { pixivCacheDB } from '../database/PixivCacheDB';
 import { getDeepSeekService, TranslationResult } from '../services/DeepSeekService';
+import preferences from '@ohos.data.preferences';
 
 
 
@@ -263,6 +264,8 @@ struct PixivNovelReaderPage {
         !this.showOriginal
       );
 
+      this.saveViewPreference(!this.showOriginal);
+
       console.info(`[aboutToDisappear] 保存进度: ${progressToSave} (finished=${isFinished})`);
     }
   }
@@ -285,21 +288,10 @@ struct PixivNovelReaderPage {
       }
 
       this.contentBlocks = parsePixivBlocks(text);
-      this.renderBlocks = this.contentBlocks;  // ← 同步给渲染用
+      this.renderBlocks = this.contentBlocks;   // 暂时先用原文
       console.info(`${TAG} 解析完成，共 ${this.contentBlocks.length} 个块`);
 
-      if (this.contentBlocks.length > 0) {
-        const savedY = await pixivCacheDB.getReadingProgress(novelId, !this.showOriginal);
-        if (savedY > 0) {
-          console.info(`${TAG} 恢复阅读位置: ${savedY}px`);
-          // 延迟一点确保渲染完成
-          setTimeout(() => {
-            this.scroller.scrollTo({ xOffset: 0, yOffset: savedY });
-            this.hasRestoredPosition = true;
-          }, 100);
-        }
-      }
-
+      // 先获取小说信息（包括译文）
       const novel = await pixivCacheDB.getNovelById(novelId);
       if (novel?.hasTitleTranslation && novel.titleTranslated) {
         this.translatedTitle = novel.titleTranslated;
@@ -307,6 +299,29 @@ struct PixivNovelReaderPage {
       if (novel?.hasFullTranslation && novel.fullTextTranslated) {
         this.translatedBlocks = parsePixivBlocks(novel.fullTextTranslated);
       }
+
+      // ★ 关键新增：根据读取的偏好决定初始显示
+      if (this.translatedBlocks.length > 0) {
+        const preferTranslation = await this.getViewPreference();
+        if (preferTranslation) {
+          this.showOriginal = false;
+          this.showTranslation = true;
+          this.renderBlocks = this.translatedBlocks;
+        }
+      }
+
+      // 恢复滚动位置放在确定视图之后，保证恢复的是当前视图的进度
+      if (this.renderBlocks.length > 0) {
+        const savedY = await pixivCacheDB.getReadingProgress(novelId, !this.showOriginal);
+        if (savedY > 0) {
+          console.info(`${TAG} 恢复阅读位置: ${savedY}px (当前视图: ${this.showOriginal ? '原文' : '译文'})`);
+          setTimeout(() => {
+            this.scroller.scrollTo({ xOffset: 0, yOffset: savedY });
+            this.hasRestoredPosition = true;
+          }, 100);
+        }
+      }
+
     } catch (e) {
       console.error(`${TAG} 失败: ${JSON.stringify(e)}`);
       promptAction.showToast({ message: '加载失败，请重试' });
@@ -516,6 +531,31 @@ struct PixivNovelReaderPage {
   }
 
   /**
+   * 保存 & 读取文字偏好
+   */
+  private async saveViewPreference(showTranslation: boolean): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const pref = await preferences.getPreferences(ctx, 'pixiv_novel_view');
+      await pref.put(`${this.params!.novelId}_showTranslation`, showTranslation);
+      await pref.flush();
+    } catch (e) {
+      console.error('saveViewPreference failed', JSON.stringify(e));
+    }
+  }
+
+  private async getViewPreference(): Promise<boolean> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const pref = await preferences.getPreferences(ctx, 'pixiv_novel_view');
+      const value = await pref.get(`${this.params!.novelId}_showTranslation`, false);
+      return value as boolean;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
    * 检测是否已阅读到底部
    */
   private checkIfReachedEnd(): void {
@@ -693,6 +733,7 @@ struct PixivNovelReaderPage {
           this.renderBlocks = this.showOriginal
             ? this.contentBlocks
             : this.translatedBlocks;
+          this.saveViewPreference(!this.showOriginal);
 
           // 3. 异步加载新视图的进度
           setTimeout(async () => {
