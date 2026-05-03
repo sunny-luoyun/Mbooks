@@ -374,8 +374,6 @@ struct AuthorDetailPage {
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.getColors().primaryText)
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
 
         Row() {
@@ -529,8 +527,6 @@ struct SeriesDetailPage {
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.getColors().primaryText)
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
 
         Row() {
