@@ -974,8 +974,7 @@ export struct PixivSearchPage {
           )
             .fontSize(15).fontWeight(FontWeight.Medium)
             .fontColor(novel.hasTitleTranslation ? this.getColors().accentText : this.getColors().primaryText)
-            .layoutWeight(1).maxLines(2)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
         }
         .layoutWeight(1)         // ⬅️ 把原来 Text 上的 layoutWeight 移到 Row 上
         .onClick(() => this.handleTitleClick(novel))

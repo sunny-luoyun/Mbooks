@@ -523,8 +523,7 @@ struct PixivAuthorPage {
             .fontColor(novel.hasTitleTranslation
               ? this.getColors().accentText    // 有翻译 → 主题色（提示可点击）
               : this.getColors().primaryText)  // 无翻译 → 默认色
-            .layoutWeight(1).maxLines(2)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
         }
         .layoutWeight(1)  // ⬅️ 把原来 Text 上的 layoutWeight 移到这个 Row 上
         .onClick(() => this.handleTitleClick(novel))

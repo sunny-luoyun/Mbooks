@@ -505,8 +505,7 @@ struct PixivSeriesPage {
           .fontWeight(FontWeight.Medium)
           .fontColor(this.getColors().primaryText)
           .layoutWeight(1)
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
 
         if (novel.hasTitleTranslation) {
           Text('译')
