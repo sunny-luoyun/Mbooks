@@ -327,7 +327,7 @@ struct AuthorDetailPage {
             ForEach(
               sg.novels.slice(0, 2),
               (n: PixivNovel): void => {
-                Text(`第${n.series?.order ?? '-'}话  ${n.title}`)
+                Text(`第${n.series?.order ?? '-'}话  ${(n.hasTitleTranslation && n.titleTranslated) ? n.titleTranslated : n.title}`)
                   .fontSize(12)
                   .fontColor(this.getColors().tertiaryText)
                   .maxLines(1)
@@ -370,10 +370,10 @@ struct AuthorDetailPage {
   @Builder NovelCard(novel: PixivNovel) {
     Row() {
       Column() {
-        Text(novel.title)
+        Text((novel.hasTitleTranslation && novel.titleTranslated) ? novel.titleTranslated : novel.title)
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
-          .fontColor(this.getColors().primaryText)
+          .fontColor((novel.hasTitleTranslation && novel.titleTranslated) ? this.getColors().accentText : this.getColors().primaryText)
           .width('100%')
 
         Row() {
@@ -523,10 +523,10 @@ struct SeriesDetailPage {
       .margin({ right: 12 })
 
       Column() {
-        Text(novel.title)
+        Text((novel.hasTitleTranslation && novel.titleTranslated) ? novel.titleTranslated : novel.title)
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
-          .fontColor(this.getColors().primaryText)
+          .fontColor((novel.hasTitleTranslation && novel.titleTranslated) ? this.getColors().accentText : this.getColors().primaryText)
           .width('100%')
 
         Row() {
