@@ -143,7 +143,7 @@ export class DeepSeekService {
   }
 
   estimateCost(charCount: number): number {
-    return (charCount / 1000) * 0.002;
+    return (charCount / 536000);
   }
 
   /**

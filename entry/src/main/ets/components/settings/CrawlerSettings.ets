@@ -568,7 +568,7 @@ export struct CrawlerSettings {
               // 更保守估算：混合价格约 ¥0.002/千tokens（输入+输出）
               // => 1元 ≈ 50万tokens ≈ 75万汉字 ≈ 75w字
               // => balanceAmount 元 ≈ balanceAmount * 75 万字
-              Text('约可翻译 ' + (Math.floor(parseFloat(this.balanceAmount) * 75 * 10) / 10).toString() + ' 万字小说')
+              Text('约可翻译 ' + (Math.floor(parseFloat(this.balanceAmount) * 53.63 * 10) / 10).toString() + ' 万字小说')
                 .fontSize(11)
                 .fontColor(this.getColors().hintText)
                 .margin({ top: 4 })
@@ -603,7 +603,7 @@ export struct CrawlerSettings {
         .alignItems(VerticalAlign.Top)
 
         // 价格提示（移到余额栏下面）
-        Text('约 ¥0.002 / 1K tokens · 估算仅供参考，以官方为准')
+        Text('估算仅供参考，以官方为准')
           .fontSize(10)
           .fontColor(this.getColors().tertiaryText)
           .margin({ top: 8 })
