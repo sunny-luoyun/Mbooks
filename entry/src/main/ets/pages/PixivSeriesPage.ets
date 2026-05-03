@@ -13,6 +13,7 @@ import {
 } from '../models/PixivModels';
 import { getPixivService } from '../services/PixivService';
 import { pixivCacheDB } from '../database/PixivCacheDB';
+import { getDeepSeekService, DeepSeekService } from '../services/DeepSeekService';
 
 interface SeriesPageColors {
   pageBg: string;
@@ -76,6 +77,10 @@ struct PixivSeriesPage {
   @State isOfflineMode: boolean = false;
   // ✅ 新增：离线模式下缓存的小说总数（用于显示）
   @State offlineCachedCount: number = 0;
+  // 记录正在翻译中的小说ID（显示 Loading）
+  @State translatingIds: Set<string> = new Set()
+  // 记录当前显示原文的小说ID（点击切换）
+  @State showingOriginalIds: Set<string> = new Set()
 
   private pixivService = getPixivService();
   private configChangeCallback: () => void = () => {};
@@ -224,6 +229,57 @@ struct PixivSeriesPage {
   private loadMore(): void {
     if (!this.hasMore || this.isLoading) return;
     this.loadSeriesNovels(this.currentPage + 1);
+  }
+
+  private async handleTitleClick(novel: PixivNovel): Promise<void> {
+    if (this.translatingIds.has(novel.id)) return;
+
+    if (novel.hasTitleTranslation && novel.titleTranslated) {
+      const newSet = new Set(this.showingOriginalIds);
+      if (newSet.has(novel.id)) {
+        newSet.delete(novel.id);
+        promptAction.showToast({ message: '已切换为译文' });
+      } else {
+        newSet.add(novel.id);
+        promptAction.showToast({ message: '已切换为原文' });
+      }
+      this.showingOriginalIds = newSet;
+      return;
+    }
+
+    const service: DeepSeekService = getDeepSeekService();
+    if (!service.hasValidKey()) {
+      promptAction.showToast({ message: '请先在设置中填入 DeepSeek API 密钥' });
+      return;
+    }
+
+    this.translatingIds.add(novel.id);
+    this.translatingIds = new Set(this.translatingIds);
+
+    const result = await service.translateText(novel.title, true);
+
+    if (result.success && result.translatedText) {
+      await pixivCacheDB.saveTitleTranslation(novel.id, result.translatedText);
+
+      novel.titleTranslated = result.translatedText;
+      novel.hasTitleTranslation = true;
+
+      // 更新 novels 数组，触发 UI 刷新
+      this.novels = this.novels.map((n: PixivNovel): PixivNovel => {
+        if (n.id === novel.id) {
+          n.titleTranslated = novel.titleTranslated;
+          n.hasTitleTranslation = novel.hasTitleTranslation;
+        }
+        return n;
+      });
+
+      promptAction.showToast({ message: '标题翻译完成' });
+    } else {
+      promptAction.showToast({ message: result.error || '翻译失败' });
+    }
+
+    this.translatingIds.delete(novel.id);
+    this.translatingIds = new Set(this.translatingIds);
   }
 
   private async cacheNovel(novel: PixivNovel): Promise<void> {
@@ -496,15 +552,24 @@ struct PixivSeriesPage {
             .constraintSize({ maxWidth: '40%' }).margin({ right: 6 })
         }
 
-        Text(
-          novel.hasTitleTranslation && novel.titleTranslated
-            ? novel.titleTranslated
-            : novel.title
-        )
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.getColors().primaryText)
-          .layoutWeight(1)
+        Row() {
+          if (this.translatingIds.has(novel.id)) {
+            LoadingProgress()
+              .width(14).height(14)
+              .color(this.getColors().accentText)
+              .margin({ right: 6 })
+          }
+          Text(
+            this.showingOriginalIds.has(novel.id) || !novel.titleTranslated
+              ? novel.title
+              : novel.titleTranslated
+          )
+            .fontSize(15).fontWeight(FontWeight.Medium)
+            .fontColor(novel.hasTitleTranslation ? this.getColors().accentText : this.getColors().primaryText)
+            .layoutWeight(1)
+        }
+        .layoutWeight(1)   // 将原本在 Text 上的 layoutWeight 移到 Row 上
+        .onClick(() => this.handleTitleClick(novel))
 
 
         if (novel.hasTitleTranslation) {
