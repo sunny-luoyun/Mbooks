@@ -26,16 +26,22 @@ export interface TranslationResult {
 // ========================================
 // DeepSeek API 响应接口
 // ========================================
+interface ThinkingConfig {
+  type: 'enabled' | 'disabled';
+}
+
 interface DeepSeekRequestBody {
   model: string;
   messages: DeepSeekMessage[];
   temperature: number;
   max_tokens: number;
+  thinking: ThinkingConfig;
 }
 
 interface DeepSeekMessage {
   role: string;
   content: string;
+  reasoning_content?: string;
 }
 
 interface DeepSeekChoice {
@@ -117,8 +123,8 @@ class AdaptiveConcurrencyController {
 
 export class DeepSeekService {
   private apiKey: string = '';
-  private baseUrl: string = 'https://api.deepseek.com/v1/chat/completions';
-  private model: string = 'deepseek-chat';
+  private baseUrl: string = 'https://api.deepseek.com/chat/completions';
+  private model: string = 'deepseek-v4-flash';
 
   private totalTranslatedChars: number = 0;
   private totalRequests: number = 0;
@@ -244,7 +250,8 @@ export class DeepSeekService {
       model: this.model,
       messages: messages,
       temperature: isTitle ? 0.8 : 1.3,
-      max_tokens: isTitle ? 100 : 8000
+      max_tokens: isTitle ? 100 : 8000,
+      thinking: { type: 'disabled' }
     };
 
     const httpRequest = http.createHttp();
