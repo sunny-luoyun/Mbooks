@@ -582,6 +582,77 @@ export class PixivService {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
+  // 获取作者收藏的小说
+  // ──────────────────────────────────────────────────────────────────────────
+
+  async fetchAuthorBookmarks(userId: string, page: number = 1): Promise<ServiceResult<PixivSearchResult>> {
+    if (!userId) {
+      return { success: false, error: '作者ID不能为空' };
+    }
+
+    const limit = 48;
+    const offset = (page - 1) * limit;
+    const url = `${AJAX_BASE}/user/${userId}/novels/bookmarks?tag=&offset=${offset}&limit=${limit}&rest=show&lang=zh`;
+    const referer = `${BASE_URL}/users/${userId}/bookmarks/novels`;
+
+    console.info(`[PixivService] 获取作者收藏 URL: ${url}`);
+
+    const resp = await this.getWithReferer<PixivAjaxResponse<Record<string, Object>>>(url, referer, 10000);
+
+    if (!resp.success || !resp.data) {
+      return { success: false, error: resp.error, code: resp.code };
+    }
+    if (resp.data.error) {
+      return { success: false, error: this.translatePixivError(resp.data.message) };
+    }
+
+    const body = resp.data.body as Record<string, Object>;
+
+    // 尝试从 works 字段解析（Record<string, RawPixivNovelItem>）
+    let novels: PixivNovel[] = [];
+    let total = 0;
+
+    const works = body['works'] as Record<string, RawPixivNovelItem> | undefined;
+    if (works && typeof works === 'object' && Object.keys(works).length > 0) {
+      novels = Object.entries(works).map((entry) => parsePixivNovelFromRaw(entry[1]));
+      // 按ID降序（最新在前）
+      novels.sort((a, b) => parseInt(b.id, 10) - parseInt(a.id, 10));
+    }
+
+    // fallback: 尝试从 thumbnails.novel 解析
+    if (novels.length === 0) {
+      const thumbnails = body['thumbnails'] as Record<string, Object> | undefined;
+      const thumbNovels = thumbnails?.['novel'] as RawPixivNovelItem[] | undefined;
+      if (thumbNovels && Array.isArray(thumbNovels) && thumbNovels.length > 0) {
+        novels = thumbNovels.map((raw) => parsePixivNovelFromRaw(raw));
+      }
+    }
+
+    // 获取总数
+    const pageObj = body['page'] as Record<string, Object> | undefined;
+    if (pageObj && typeof pageObj['total'] === 'number') {
+      total = pageObj['total'] as number;
+    } else if (typeof body['total'] === 'number') {
+      total = body['total'] as number;
+    } else {
+      total = novels.length;
+    }
+
+    console.info(`[PixivService] 作者 ${userId} 收藏: ${novels.length} 部 (共${total})`);
+
+    return {
+      success: true,
+      data: {
+        novels,
+        total,
+        currentPage: page,
+        hasMore: offset + limit < total,
+        keyword: ''
+      }
+    };
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
   // 搜索小说
   // ──────────────────────────────────────────────────────────────────────────
 

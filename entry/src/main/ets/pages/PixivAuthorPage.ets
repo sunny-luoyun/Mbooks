@@ -82,6 +82,15 @@ struct PixivAuthorPage {
   @State isOfflineMode: boolean = false;       // 是否处于离线模式
   @State offlineCachedCount: number = 0;       // 离线缓存作品数（用于提示）
 
+  // 收藏分栏
+  @State activeTab: number = 0;                // 0=作品, 1=收藏
+  @State bookmarkNovels: PixivNovel[] = [];
+  @State isLoadingBookmarks: boolean = false;
+  @State bookmarkPage: number = 1;
+  @State hasMoreBookmarks: boolean = false;
+  @State loadBookmarkError: string = '';
+  @State isBookmarkOffline: boolean = false;
+
   private pixivService: PixivService | null = null;
   private configChangeCallback: () => void = () => {};
   private configCallbackId: number = -1;
@@ -134,6 +143,46 @@ struct PixivAuthorPage {
     this.novels = authorNovels;
     this.offlineCachedCount = authorNovels.length;
     this.hasMore = false; // 离线模式不支持分页
+  }
+
+  private async loadCachedBookmarks(): Promise<void> {
+    this.isBookmarkOffline = true;
+    const allCached = await pixivCacheDB.getAllCachedNovels();
+    // 收藏列表没有直接的作者关联，按作者过滤本地缓存
+    const authorNovels = allCached.filter((n: PixivNovel): boolean => n.authorId === this.authorId);
+    authorNovels.sort((a, b) => b.createDate.localeCompare(a.createDate));
+    this.bookmarkNovels = authorNovels;
+    this.hasMoreBookmarks = false;
+  }
+
+  private async loadAuthorBookmarks(page: number): Promise<void> {
+    if (!this.authorId) return;
+    if (!this.pixivService) return;
+    this.isLoadingBookmarks = true;
+    this.loadBookmarkError = '';
+    const result: ServiceResult<PixivSearchResult> = await this.pixivService.fetchAuthorBookmarks(this.authorId, page);
+
+    if (result.success && result.data) {
+      this.isBookmarkOffline = false;
+      const merged = await this.mergeCacheStatus(result.data.novels);
+      if (page === 1) {
+        this.bookmarkNovels = merged;
+      } else {
+        this.bookmarkNovels = this.bookmarkNovels.concat(merged);
+      }
+      this.hasMoreBookmarks = result.data.hasMore;
+      this.bookmarkPage = page;
+      pixivCacheDB.saveNovelMetaBatch(result.data.novels);
+    } else {
+      this.loadBookmarkError = result.error || '加载失败';
+      await this.loadCachedBookmarks();
+      if (this.bookmarkNovels.length === 0 && page === 1) {
+        promptAction.showToast({ message: '无网络且无缓存，请联网后重试' });
+      } else if (this.bookmarkNovels.length > 0 && page === 1) {
+        promptAction.showToast({ message: '当前为离线模式，显示本地缓存' });
+      }
+    }
+    this.isLoadingBookmarks = false;
   }
 
   private async loadAuthorNovels(page: number): Promise<void> {
@@ -203,8 +252,15 @@ struct PixivAuthorPage {
       novel.titleTranslated = result.translatedText;
       novel.hasTitleTranslation = true;
 
-      // ✅ 修复2：变量名改为 novels，展开改为逐字段赋值
+      // 更新 works 和 bookmarks 两个列表的 UI
       this.novels = this.novels.map((n: PixivNovel): PixivNovel => {
+        if (n.id === novel.id) {
+          n.titleTranslated = novel.titleTranslated;
+          n.hasTitleTranslation = novel.hasTitleTranslation;
+        }
+        return n;
+      });
+      this.bookmarkNovels = this.bookmarkNovels.map((n: PixivNovel): PixivNovel => {
         if (n.id === novel.id) {
           n.titleTranslated = novel.titleTranslated;
           n.hasTitleTranslation = novel.hasTitleTranslation;
@@ -241,9 +297,15 @@ struct PixivAuthorPage {
   }
 
   private loadMore(): void {
-    if (this.isOfflineMode) return;           // 新增
-    if (!this.hasMore || this.isLoading) return;
-    this.loadAuthorNovels(this.currentPage + 1);
+    if (this.activeTab === 0) {
+      if (this.isOfflineMode) return;
+      if (!this.hasMore || this.isLoading) return;
+      this.loadAuthorNovels(this.currentPage + 1);
+    } else {
+      if (this.isBookmarkOffline) return;
+      if (!this.hasMoreBookmarks || this.isLoadingBookmarks) return;
+      this.loadAuthorBookmarks(this.bookmarkPage + 1);
+    }
   }
 
   private async cacheNovel(novel: PixivNovel): Promise<void> {
@@ -425,53 +487,135 @@ struct PixivAuthorPage {
       .margin({ top: 12, bottom: 12 })
       .alignSelf(ItemAlign.Center)
 
-      // 小说列表
-      if (this.isLoading && this.novels.length === 0) {
-        Column() {
-          LoadingProgress().width(48).height(48).color(this.getColors().accentText)
-          Text('正在加载作品...')
-            .fontSize(14).fontColor(this.getColors().secondaryText).margin({ top: 12 })
-        }
-        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      } else if (this.novels.length > 0) {
-        List({ space: 10 }) {
-          ForEach(this.novels, (novel: PixivNovel): void => {
-            ListItem() { this.NovelCard(novel) }
-            .width('92%')
-          }, (novel: PixivNovel): string => `${novel.id}_${novel.cacheStatus}`)
+      // 分栏切换
+      Row() {
+        this.TabButton('作品', 0)
+        this.TabButton('收藏', 1)
+      }
+      .width('92%')
+      .height(40)
+      .backgroundColor(this.getColors().cardBg)
+      .borderRadius(8)
+      .margin({ bottom: 8 })
+      .alignSelf(ItemAlign.Center)
 
-          ListItem() {
-            if (this.hasMore) {
-              Button(this.isLoading ? '加载中...' : '加载更多')
-                .width('100%').height(44).fontSize(14)
-                .fontColor(this.getColors().accentText)
-                .backgroundColor(this.getColors().cardBg)
-                .borderRadius(12)
-                .enabled(!this.isLoading)
-                .onClick((): void => { this.loadMore() })
-            } else if (this.novels.length > 0) {
-              Text('— 已加载全部作品 —')
-                .fontSize(12).fontColor(this.getColors().tertiaryText)
-                .width('100%').textAlign(TextAlign.Center)
-                .padding({ top: 8, bottom: 8 })
-            }
+      // 小说列表
+      if (this.activeTab === 0) {
+        // ── 作品列表 ──
+        if (this.isLoading && this.novels.length === 0) {
+          Column() {
+            LoadingProgress().width(48).height(48).color(this.getColors().accentText)
+            Text('正在加载作品...')
+              .fontSize(14).fontColor(this.getColors().secondaryText).margin({ top: 12 })
           }
-          .width('92%')
+          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+        } else if (this.novels.length > 0) {
+          List({ space: 10 }) {
+            ForEach(this.novels, (novel: PixivNovel): void => {
+              ListItem() { this.NovelCard(novel) }
+              .width('92%')
+            }, (novel: PixivNovel): string => `${novel.id}_${novel.cacheStatus}`)
+
+            ListItem() {
+              if (this.hasMore) {
+                Button(this.isLoading ? '加载中...' : '加载更多')
+                  .width('100%').height(44).fontSize(14)
+                  .fontColor(this.getColors().accentText)
+                  .backgroundColor(this.getColors().cardBg)
+                  .borderRadius(12)
+                  .enabled(!this.isLoading)
+                  .onClick((): void => { this.loadMore() })
+              } else if (this.novels.length > 0) {
+                Text('— 已加载全部作品 —')
+                  .fontSize(12).fontColor(this.getColors().tertiaryText)
+                  .width('100%').textAlign(TextAlign.Center)
+                  .padding({ top: 8, bottom: 8 })
+              }
+            }
+            .width('92%')
+          }
+          .width('100%').layoutWeight(1)
+          .alignListItem(ListItemAlign.Center)
+          .edgeEffect(EdgeEffect.Spring)
+        } else {
+          Column() {
+            Text('📚').fontSize(60).margin({ bottom: 16 })
+            Text('暂无公开作品').fontSize(16).fontColor(this.getColors().emptyText)
+          }
+          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
         }
-        .width('100%').layoutWeight(1)
-        .alignListItem(ListItemAlign.Center)
-        .edgeEffect(EdgeEffect.Spring)
       } else {
-        Column() {
-          Text('📚').fontSize(60).margin({ bottom: 16 })
-          Text('暂无公开作品').fontSize(16).fontColor(this.getColors().emptyText)
+        // ── 收藏列表 ──
+        if (this.isLoadingBookmarks && this.bookmarkNovels.length === 0) {
+          Column() {
+            LoadingProgress().width(48).height(48).color(this.getColors().accentText)
+            Text('正在加载收藏...')
+              .fontSize(14).fontColor(this.getColors().secondaryText).margin({ top: 12 })
+          }
+          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+        } else if (this.bookmarkNovels.length > 0) {
+          List({ space: 10 }) {
+            ForEach(this.bookmarkNovels, (novel: PixivNovel): void => {
+              ListItem() { this.NovelCard(novel) }
+              .width('92%')
+            }, (novel: PixivNovel): string => `bm_${novel.id}_${novel.cacheStatus}`)
+
+            ListItem() {
+              if (this.hasMoreBookmarks) {
+                Button(this.isLoadingBookmarks ? '加载中...' : '加载更多')
+                  .width('100%').height(44).fontSize(14)
+                  .fontColor(this.getColors().accentText)
+                  .backgroundColor(this.getColors().cardBg)
+                  .borderRadius(12)
+                  .enabled(!this.isLoadingBookmarks)
+                  .onClick((): void => { this.loadMore() })
+              } else if (this.bookmarkNovels.length > 0) {
+                Text('— 已加载全部收藏 —')
+                  .fontSize(12).fontColor(this.getColors().tertiaryText)
+                  .width('100%').textAlign(TextAlign.Center)
+                  .padding({ top: 8, bottom: 8 })
+              }
+            }
+            .width('92%')
+          }
+          .width('100%').layoutWeight(1)
+          .alignListItem(ListItemAlign.Center)
+          .edgeEffect(EdgeEffect.Spring)
+        } else {
+          Column() {
+            Text('🔖').fontSize(60).margin({ bottom: 16 })
+            Text('暂无收藏').fontSize(16).fontColor(this.getColors().emptyText)
+            Text('该作者尚未收藏公开小说').fontSize(12).fontColor(this.getColors().emptySubText).margin({ top: 8 })
+          }
+          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
         }
-        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
       }
     }
     .width('100%')
     .height('100%')
     .backgroundColor(this.getColors().pageBg)
+  }
+
+  @Builder TabButton(label: string, tabIndex: number) {
+    Text(label)
+      .fontSize(14)
+      .fontWeight(this.activeTab === tabIndex ? FontWeight.Bold : FontWeight.Normal)
+      .fontColor(this.activeTab === tabIndex ? '#FA8C16' : this.getColors().secondaryText)
+      .width('50%')
+      .height('100%')
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.activeTab === tabIndex
+        ? (this.colorMode === 0 ? '#2A1E0A' : '#FFF7E6')
+        : Color.Transparent)
+      .borderRadius(8)
+      .onClick(() => {
+        if (this.activeTab !== tabIndex) {
+          this.activeTab = tabIndex;
+          if (tabIndex === 1 && this.bookmarkNovels.length === 0 && !this.isLoadingBookmarks) {
+            this.loadAuthorBookmarks(1);
+          }
+        }
+      })
   }
 
   @Builder NovelCard(novel: PixivNovel) {
